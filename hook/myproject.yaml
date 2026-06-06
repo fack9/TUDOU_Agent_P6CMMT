@@ -1,0 +1,18 @@
+# ============================================================
+# 项目级 Hook — 仅当工作目录匹配 doing_path 时生效
+# ============================================================
+doing_path: "YOUR_PROJACT"
+
+hooks:
+  # --- 构建前检查 ---
+  - event: on_tool_before
+    command: "python -c \"import sys; sys.exit('npm install' not in '{arguments}')\""
+    blocking: false
+
+  # --- 编译完成后通知 ---
+  - event: on_tool_after
+    command: "echo '[{name}] completed' >> build.log"
+
+  # --- 会话结束统计 ---
+  - event: on_agent_stop
+    command: "echo 'Session done: {duration_ms}ms, {tokens_input}+{tokens_output} tokens'"

@@ -1,0 +1,61 @@
+# TUDOU_agent 配置文件
+# 位置: projact/config.yaml
+#
+# 配置优先级: defaults < ~/.tudou_agent/config.yaml < .tudou_agent.yaml < projact/config.yaml < 环境变量
+# 你只需要填 api_key，其他项有默认值（见 config/defaults.py）
+
+# --- 必填：API Key + Base URL ---
+providers:
+  anthropic:
+    api_key: ""   # 如果用 Claude 模型填这里 (sk-ant-xxx)
+    base_url: ""
+  openai_compat:
+    api_key: "sk-2dffc60c896c4da5927d6f10248b9eac"
+    base_url: "https://api.deepseek.com/v1"
+
+# --- 可选 ---
+# model: "deepseek-v4-pro"
+# permission_mode: "default"
+# max_iterations: 50
+# max_llm_retries: 3        # LLM API 调用重试次数（429/5xx/超时）
+# bash_timeout_seconds: 120
+
+# --- 远程控制 (飞书Bot中继) ---
+# 使用飞书Bot作为消息中转，无需内网穿透
+# 创建飞书应用: https://open.feishu.cn → 添加机器人能力 → 事件订阅选"长连接"
+# remote指令用法:/remote start 开启远程控制服务(start后面可以再加nocode参数，这样就不用你再看一眼配对码了)
+#这一条为防止有些老傻子不知道怎么配对的教程(加了nocode参数当我没说)，你先给它发一条信息,然后TUDOU_agent的后台会显示,里面有个code = XXXXX ,你把code显示的6位数密码在你聊天的设备上发，它验证好了就可以用了
+# /remote stop 停止远程控制服务
+# /remote status 查看连接状态
+remote:
+  feishu:
+    app_id: "cli_aa980bdb87a11cda"
+    app_secret: "lWT7ETEhbjGMTB6u8DAwMXgOItLVYdNf"
+    base_url: "https://open.feishu.cn/open-apis"
+
+# --- MCP (Model Context Protocol) ---
+# 接入外部工具服务，agent 启动时自动连接并注册工具到 ToolRegistry
+# 工具命名规则: mcp__<服务器名>__<工具名>
+# 每个 server 字段: name(必填) command(必填) args(可选) env(可选) cwd(可选)
+mcp:
+  servers:
+    - name: filesystem
+      command: npx
+      args: ["-y", "@anthropic-ai/mcp-server-filesystem", "YOUR_USER_PATH"]
+
+    - name: github
+      command: npx
+      args: ["-y", "@anthropic-ai/mcp-server-github"]
+      env:
+        GITHUB_TOKEN: "YOUR_TOKEN"
+
+# --- Bing Web Search API 回退 ---
+# 当 BS4 解析 Bing HTML 失败时自动启用 Bing Search API v7
+# 获取 API key: https://portal.azure.com → 创建 Bing Search 资源
+tools:
+  web_search:
+    bing_api_key: ""
+  web_fetch:
+    extraction_model: ""        # prompt提炼用的模型，留空=用主模型
+    extraction_api_key: ""      # 提炼模型专用API key，留空=复用主provider
+    extraction_base_url: ""     # 提炼模型专用base URL，留空=复用主provider

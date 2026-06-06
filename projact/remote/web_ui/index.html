@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>TUDOU Remote</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- Pairing Screen -->
+  <div id="pair-screen" class="screen">
+    <div class="pair-card">
+      <div class="logo">🥔 TUDOU</div>
+      <h2>绑定设备</h2>
+      <p class="hint">在 TUDOU_agent 终端中查看配对码</p>
+      <input type="text" id="pair-code" inputmode="numeric" pattern="[0-9]*"
+             maxlength="6" placeholder="输入6位配对码" autocomplete="off">
+      <button id="pair-btn" class="btn-primary">绑定</button>
+      <p id="pair-error" class="error"></p>
+    </div>
+  </div>
+
+  <!-- Chat Screen -->
+  <div id="chat-screen" class="screen hidden">
+    <div class="topbar">
+      <span class="topbar-title">TUDOU Agent</span>
+      <span id="status-dot" class="dot green"></span>
+      <button id="unpair-btn" class="btn-small">解绑</button>
+    </div>
+
+    <div id="messages" class="messages"></div>
+
+    <div id="typing-indicator" class="typing hidden">
+      <span class="dot-pulse"></span> Agent 思考中...
+    </div>
+
+    <div class="input-bar">
+      <input type="text" id="msg-input" placeholder="输入消息..." autocomplete="off">
+      <button id="send-btn" class="btn-send">发送</button>
+    </div>
+  </div>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>

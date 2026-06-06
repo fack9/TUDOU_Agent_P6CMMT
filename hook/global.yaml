@@ -1,0 +1,33 @@
+# ============================================================
+# TUDOU_agent 全局 Hook 配置（对所有项目生效）
+# ============================================================
+#
+# 如需项目级 Hook，复制此文件，添加 doing_path 字段（路径用正斜杠）：
+#   doing_path: "C:/Users/wa/Desktop/my_project"
+#   只有当前工作目录匹配 doing_path 时，该文件的 hooks 才会触发
+#
+# 事件列表:
+#   on_agent_start   — 对话开始
+#   on_agent_stop    — 对话结束
+#   on_tool_before   — 工具执行前（blocking=true 可阻断）
+#   on_tool_after    — 工具执行后
+#   on_compress      — 上下文压缩后
+#
+# 占位符:
+#   {name} {arguments} {success} {user_input} {count}
+#   {final_message} {tokens_input} {tokens_output} {duration_ms} {tool_stats}
+# ============================================================
+
+hooks:
+  # --- 审计日志：记录所有工具调用 ---
+  - event: YOUR_Event
+    command: "echo '[{name}] success={success}' >> tudou_audit.log"
+
+  # --- 危险操作拦截（取消注释启用）---
+  # - event: on_tool_before
+  #   command: "python -c \"import sys; sys.exit('rm -rf' in '{arguments}' or 'sudo' in '{arguments}')\""
+  #   blocking: true
+
+  # --- 完成通知（取消注释启用）---
+  # - event: on_agent_stop
+  #   command: "echo 'TUDOU done in {duration_ms}ms, {tokens_input}+{tokens_output} tokens'"
