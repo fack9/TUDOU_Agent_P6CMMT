@@ -8,6 +8,8 @@ StreamCallback = Callable[[str], None]
 class TokenUsage:
     input: int = 0
     output: int = 0
+    cache_read: int = 0
+    cache_write: int = 0
 
 @dataclass
 class ToolCall:

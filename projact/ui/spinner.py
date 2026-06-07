@@ -4,8 +4,8 @@ import time
 import threading
 
 class TUDOU_spinner:
-    FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-    DOTS = ['.  ', '.. ', '...', '...']
+    FRAMES = ['⠋', '⠙', '⠹', '⠇' ,'⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+    DOTS = ['⠋ （¯﹃¯）?', '⠙ （¯﹃¯）?', '⠹ （¯﹃¯）?', '⠇ （¯﹃¯）?' ,'⠼ （¯﹃¯）?', '⠴ （¯﹃¯）?', '⠦ （¯﹃¯）?', '⠧ （¯﹃¯）?', '⠇ （¯﹃¯）?', '⠏ （¯﹃¯）?']
     MESSAGES = ['The agent is thinking for your questions...', 'The agent is analyzing for your questions...', 'The agent is processing for your questions...', 'The agent is generating for your questions...', 'The agent is reasoning for your questions...', 'The agent is computing for your questions...']
     MESSAGE_INTERVAL = 2.5
 

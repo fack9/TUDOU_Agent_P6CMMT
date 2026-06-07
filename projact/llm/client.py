@@ -12,15 +12,27 @@ class LLMClient:
         self._providers: dict[str, Any] = {}
         self._default_model = settings.model
         self._max_retries = settings.get('max_llm_retries', 3)
+        thinking_cfg = settings.get('thinking', {})
+        self._thinking_budget = thinking_cfg.get('budget_tokens') if thinking_cfg.get('enabled') else None
+        providers_cfg = settings.get('providers', {})
+        self._prompt_caching = providers_cfg.get('anthropic', {}).get('prompt_caching', True)
+        self._response_format = settings.get('response_format')
+        self._tool_choice = settings.get('tool_choice', 'auto')
 
-    def complete(self, messages: list[dict], tools: list[dict] | None=None, model: str | None=None, on_token=None) -> LLMResponse:
+    def complete(self, messages: list[dict], tools: list[dict] | None=None, model: str | None=None, on_token=None, thinking_budget: int | None=None, response_format: str | None=None, tool_choice: str='auto') -> LLMResponse:
         model = model or self._default_model
         provider = self._get_provider(model)
+        if thinking_budget is None:
+            thinking_budget = self._thinking_budget
+        if response_format is None:
+            response_format = self._response_format
+        if tool_choice == 'auto':
+            tool_choice = self._tool_choice
 
         last_error = None
         for attempt in range(self._max_retries):
             try:
-                return provider.complete(messages=messages, tools=tools, model=model, on_token=on_token)
+                return provider.complete(messages=messages, tools=tools, model=model, on_token=on_token, thinking_budget=thinking_budget, prompt_caching=self._prompt_caching, response_format=response_format, tool_choice=tool_choice)
             except Exception as e:
                 last_error = e
                 if not self._is_retryable(e) or attempt >= self._max_retries - 1:

@@ -16,6 +16,8 @@
 - `edit`源文件可视化
 - `taskcreate`任务创建(LLM用)
 - `taskupdate`任务更新(LLM用)
+- `sub-agent`多示例并行(LLM用)
+- `enablesandbox`环境隔离沙箱
 
 <!-- 连接定义 -->
 [headroom]:https://github.com/chopratejas/headroom
@@ -65,6 +67,16 @@
 - `context压缩`模块大升级,将[`headroom`][headroom]的上下文压缩和提炼逻辑接入`TUDOU_agent`的`context压缩`,并允许`LLM`选择性查看原文还是压缩文 V =`1.17.6.6`
 - 支持`LLM`一次性传回多指令运行 V =`1.17.6.7`
 - 将命令输出从固定输出变为流式输出 V =`1.17.6.8`
+- 新增`LLM`调用重试 V =`1.17.6.9`
+- 添加`sub-agent`和其允许启用指令`subagent`,用于在复杂任务下主agent分解任务并委派至子agent执行 V =`1.17.7.9`
+- 新增`hook`功能 V =`1.18.7.9`
+- 添加`AskUserQuestion`环节,并升级了`task`面板的出现和清理逻辑 V =`1.18.8.9`
+- 新增`Prompt Caching`用于减少调用工具的**token**损耗(如果模型不支持自动退回) V =`1.18.9.0`
+- 支持可推理模型的`thinking`模式 V =`1.18.9.1`
+- 新增更安全的`Workspace`隔离测试环境,用完即弃 V =`1.19.9.1`
+- 新增`skills`指令和其多种参数,核心新增参数`install`需要自行去下载`Git Bash`,并且`install`仅支持下载`Github`上的`skills`(与`Github`连接需要加速器) V =`2.10.9.1`
+- 新增`Low-Integrity`式沙箱,和`sandbox`系列指令 V =`2.11.9.1`
+- 新增断点崩溃恢复机制,如果一个会话意外崩溃,需要重启,则可在新对话中直接输入`resume`,`resume`的新逻辑优先检查有没有`checkpoint`,随后载入并加载崩溃的会话内容 V =`2.12.0.1`
 
 ### TUDOU_agent重大更新节点
 - `remote`飞书接口支持 V = `0.12.1.2`
@@ -77,6 +89,9 @@
 - `skills`文件,库文件夹为`builtin_skills`中
 - `memory`创建,以支持大模型跨会话记忆(有时候你得主动和他说记忆会话,他才会保存记忆)
 - 根目录下的`config.yaml`文件为大模型配置文件和`config`文件夹
+- 根目录下的`hooks`文件夹中的`yaml`文件可以配置全局`hook`脚本配置和项目级配置
+- `Workspace`隔离,隔离环境不影响实际,用完即弃
+- `Low-Integrity`式`sandbox`,可由`LLM`或手动指令进入,环境完全隔离,不影响实际环境,用完即弃
 
 ### 如何配置模型
 - 1.前往任意大模型网页(如果你还没有`API_key`),找到API平台服务(`TUDOU`这边默认是`deepseek-v4-pro`)
@@ -139,8 +154,6 @@
 - 7.点`版本管理与发布`,点`创建版本`,把信息填好，点`保存`
 - 8.回到`凭证与基础信息`,复制你的`App ID`和你的`App Secret`至`remote`栏位下`feishu`下的`app_id`和`app_secret`(或者是直接使用`setfas`和`setfid`指令设置)
 - 9.打开你的手机，下载`飞书`,完成各种验证,随后在搜索栏搜索你保存的实例名称，找到他就可以对话了(记得一定先在agent上运行/remote start )
-
-
 
 ### 个别提示词回复错误说明&命令行错误
 - 个别`LLM`你问他哪家公司的模型,如`deepseek`,他可能回答你是`Anthropic`的`claude`,底层原因是这些`LLM`他们本身知识库和训练集中没有告诉他们是谁,而`TUDOU_agent`中的预提示词一部分是从`claude_code`里扒出来,`LLM`看提示词推测他就是`Anthropic`的模型(2025年后各公司产出的大模型大部分都有这个问题,他们的知识库和训练集中基本都多多少少有`claude_code`的提示词)
@@ -218,9 +231,10 @@ NoConsoleScreenBufferError: "No Windows console found.
 Are you running cmd.exe?"
 ```
 人话:进程需要一个真实的终端才能工作，管道不行。你在`shell`模式里跑一个同样依赖的程序，子进程拿不到真正的控制台句柄，直接挂了。
+- 千万不要作死让`LLM`或者在`shell`模式中执行`wsl`这类运行于`windown`的子系统,他们的输出并不会被传回`TUDOU_agent`而是后台运行(你让`LLM`运行它会报错超时,但实际它运行了),而这时,你按什么键`TUDOU_agent`都不会显示,因为此时你的输入优先级在`wsl`的界面,虽不显示但你输入的内容`enter`后仍会生效,如果是`wsl`你可以输入`exit`来退出这种状态,其他的就不知道了
 
 
 ### ??
 - 如何成为一名`标准`的`神人`?
-- 此`TUDOU_agent`版本:`TUDOU_agent_N4HBEST_1.17.6.7_version`
+- 此`TUDOU_agent`版本:`TUDOU_agent_N4HBEST_2.12.0.1_version`
 

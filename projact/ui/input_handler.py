@@ -8,7 +8,7 @@ from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.layout import Layout, HSplit, VSplit, Window, Dimension, FloatContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.styles import Style
-SLASH_COMMANDS = ['/help', '/exit', '/quit', '/clear', '/model', '/tools', '/tudou', '/context', '/skills', '/activate', '/deactivate', '/importdangerskills', '/removeskills', '/config', '/history', '/memory', '/permissions', '/permission', '/mcp', '/setmapi', '/setmurl', '/setfid', '/setfas', '/rootmodel', '/betterui', '/remote', '/buildCLI', '/resume', '/export', '/tasks']
+SLASH_COMMANDS = ['/help', '/exit', '/quit', '/clear', '/model', '/tools', '/tasks', '/tudou', '/context', '/skills', '/activate', '/deactivate', '/importdangerskills', '/removeskills', '/config', '/history', '/memory', '/permissions', '/permission', '/mcp', '/setmapi', '/setmurl', '/setfid', '/setfas', '/thinking', '/sandbox', '/rootmodel', '/betterui', '/worktree', '/subagent', '/remote', '/buildCLI', '/resume', '/export']
 
 SUBCOMMANDS = {
     '/history':    ['list', 'recent', 'show', 'LLM'],
@@ -18,6 +18,11 @@ SUBCOMMANDS = {
     '/remote':     ['start', 'stop', 'status', 'unpair'],
     '/remote start': ['nocode'],
     '/buildCLI':    ['live'],
+    '/sandbox':    ['on', 'off', 'status'],
+    '/worktree':   ['create', 'enter', 'exit', 'list'],
+    '/skills':     ['list', 'install', 'search'],
+    '/resume':     ['list', 'list all', 'clear', 'delete', 'import'],
+    '/export':     [],
     '/resume':      ['list', 'clear', 'delete', 'import'],
     '/resume list': ['all'],
 }
@@ -233,3 +238,27 @@ class InputHandler:
             return session.prompt(_shell_prompt, enable_history_search=True).strip()
         except (KeyboardInterrupt, EOFError):
             return ''
+
+    @staticmethod
+    def prompt_user_response(questions: list[dict]) -> str:
+        """Collect user answers to plan-mode questions via terminal input."""
+        answers = []
+        for i, q in enumerate(questions):
+            header = q.get('header', f'Q{i+1}')
+            question = q.get('question', '')
+            options = q.get('options', [])
+            if options:
+                labels = [opt.get('label', opt) if isinstance(opt, dict) else str(opt) for opt in options]
+                prompt = f'  [{header}] Your choice (1-{len(labels)}): '
+                try:
+                    choice = input(prompt).strip()
+                except (KeyboardInterrupt, EOFError):
+                    choice = ''
+                answers.append(f'[{header}] User chose: {choice}')
+            else:
+                try:
+                    answer = input(f'  [{header}] {question}: ').strip()
+                except (KeyboardInterrupt, EOFError):
+                    answer = '(no answer)'
+                answers.append(f'[{header}] {question} → {answer}')
+        return '\n'.join(answers)

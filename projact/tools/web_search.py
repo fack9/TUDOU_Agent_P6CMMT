@@ -24,7 +24,7 @@ class WebSearchTool(BaseTool):
         self._max_results = max_results
         self._bing_api_key = bing_api_key
 
-    def execute(self, query: str) -> ToolResult:
+    def execute(self, query: str, on_output=None) -> ToolResult:
         if httpx is None:
             return ToolResult(success=False, output='', error='httpx is required for web search')
 
@@ -32,10 +32,14 @@ class WebSearchTool(BaseTool):
         cache_key = f'q:{query}'
         cached = _search_cache.get(cache_key)
         if cached is not None:
+            if on_output:
+                on_output(f'Serving from cache: {query} ({len(cached)} results)')
             results = cached
             return ToolResult(success=True, output=self._format_results(results),
                               metadata={'count': len(results), 'query': query, 'cache_hit': True})
 
+        if on_output:
+            on_output(f'Searching: {query}...')
         results = []
         bs4_failed = False
         try:
@@ -49,12 +53,16 @@ class WebSearchTool(BaseTool):
             bs4_failed = True
 
         if bs4_failed and self._bing_api_key:
+            if on_output:
+                on_output('  Bing web scrape failed, trying API...')
             results = self._search_with_api(query)
 
         if not results:
             return ToolResult(success=True, output=f'No results found for: {query}',
                               metadata={'count': 0, 'query': query})
 
+        if on_output:
+            on_output(f'  Found {len(results)} results')
         _search_cache.set(cache_key, results)
         return ToolResult(success=True, output=self._format_results(results),
                           metadata={'count': len(results), 'query': query})

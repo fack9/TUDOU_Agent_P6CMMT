@@ -45,14 +45,15 @@ class TUDOU_Agent:
         response = self.run_conversation(user_input)
         return response.final_message
 
-    def run_conversation(self, user_input: str, system_extra: str='', history: list[dict] | None=None, on_tool_call: Any=None, on_approval: Any=None, on_pre_tool: Any=None, get_supplements: Any=None, on_stream_token: Any=None, on_tool_output: Any=None) -> AgentResponse:
+    def run_conversation(self, user_input: str, system_extra: str='', history: list[dict] | None=None, on_tool_call: Any=None, on_approval: Any=None, on_pre_tool: Any=None, get_supplements: Any=None, on_stream_token: Any=None, on_tool_output: Any=None, on_checkpoint: Any=None) -> AgentResponse:
         start_time = time.time()
         tool_stats: dict[str, int] = {}
         total_usage = TokenUsage()
         if history:
             for msg in history:
                 self.context.add_to_history(msg)
-        messages = self.context.build_messages(user_input=user_input, tools=self.tools.get_schemas() if self.tools.tool_count() > 0 else None, system_extra=system_extra)
+        worktree_path = str(self.context.working_dir) if self.context.working_dir != Path.cwd() else ''
+        messages = self.context.build_messages(user_input=user_input, tools=self.tools.get_schemas() if self.tools.tool_count() > 0 else None, system_extra=system_extra, worktree_path=worktree_path)
         iteration = 0
         final_text = ''
         if self._hooks:
@@ -77,6 +78,8 @@ class TUDOU_Agent:
             self.tracker.update_after_llm_call(response.usage)
             total_usage.input += response.usage.input
             total_usage.output += response.usage.output
+            total_usage.cache_read += response.usage.cache_read
+            total_usage.cache_write += response.usage.cache_write
             if response.has_tool_calls():
                 # Phase 1: validate + classify
                 read_only_calls = []
@@ -118,7 +121,8 @@ class TUDOU_Agent:
                                     on_pre_tool(tc.name, tc.arguments)
                                 if self._hooks:
                                     self._hooks.fire('on_tool_before', name=tc.name, arguments=tc.arguments)
-                                futures[executor.submit(self.tools.execute, tc.name, tc.arguments)] = tc
+                                tool_output = (lambda n: lambda line: on_tool_output(line, n) if on_tool_output else None)(tc.name)
+                                futures[executor.submit(self.tools.execute, tc.name, tc.arguments, on_output=tool_output)] = tc
                             for future in as_completed(futures):
                                 tc = futures[future]
                                 result = future.result()
@@ -131,7 +135,8 @@ class TUDOU_Agent:
                             on_pre_tool(tc.name, tc.arguments)
                         if self._hooks:
                             self._hooks.fire('on_tool_before', name=tc.name, arguments=tc.arguments)
-                        result = self.tools.execute(tc.name, tc.arguments, on_output=on_tool_output)
+                        tool_output = (lambda n: lambda line: on_tool_output(line, n) if on_tool_output else None)(tc.name)
+                        result = self.tools.execute(tc.name, tc.arguments, on_output=tool_output)
                         if on_tool_call:
                             on_tool_call(tc.name, tc.arguments, result)
                         self._append_tool_messages(messages, tc, response, result, response.reasoning_content)
@@ -147,12 +152,15 @@ class TUDOU_Agent:
                                 on_tool_call(tc.name, tc.arguments, result)
                             self._append_tool_messages(messages, tc, response, result, response.reasoning_content)
                             continue
-                    result = self.tools.execute(tc.name, tc.arguments, on_output=on_tool_output)
+                    tool_output = (lambda n: lambda line: on_tool_output(line, n) if on_tool_output else None)(tc.name)
+                    result = self.tools.execute(tc.name, tc.arguments, on_output=tool_output)
                     if on_tool_call:
                         on_tool_call(tc.name, tc.arguments, result)
                     self._append_tool_messages(messages, tc, response, result, response.reasoning_content)
 
                 iteration += 1
+                if on_checkpoint:
+                    on_checkpoint(iteration, messages)
                 continue
             final_text = response.content
             self.context.add_to_history({'role': 'user', 'content': user_input})
@@ -160,6 +168,8 @@ class TUDOU_Agent:
             if response.reasoning_content:
                 final_assistant['reasoning_content'] = response.reasoning_content
             self.context.add_to_history(final_assistant)
+            if on_checkpoint:
+                on_checkpoint(iteration, messages)
             break
         if not final_text and iteration >= self.max_iterations:
             final_text = 'Reached maximum iterations without a final response.'

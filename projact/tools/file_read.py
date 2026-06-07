@@ -12,7 +12,7 @@ class ReadTool(BaseTool):
         self._max_lines = max_lines
         self._workdir = Path(workdir).resolve()
 
-    def execute(self, file_path: str, offset: int | None=None, limit: int | None=None) -> ToolResult:
+    def execute(self, file_path: str, offset: int | None=None, limit: int | None=None, on_output=None) -> ToolResult:
         path = Path(file_path)
         if not path.is_absolute():
             path = self._workdir / path
@@ -34,7 +34,13 @@ class ReadTool(BaseTool):
             return ToolResult(success=True, output='(empty selection or file)', metadata={'lines': 0, 'total_lines': total_lines})
         max_line = min(end, total_lines)
         width = len(str(max_line))
-        output = '\n'.join((f'{i + start + 1:>{width}}\t{line}' for i, line in enumerate(selected)))
+        output_lines = []
+        for i, line in enumerate(selected):
+            formatted = f'{i + start + 1:>{width}}\t{line}'
+            output_lines.append(formatted)
+            if on_output and total_lines > 100 and i % 10 == 0:
+                on_output(formatted)
+        output = '\n'.join(output_lines)
         truncated = ''
         if end < total_lines:
             remaining = total_lines - end

@@ -9,9 +9,11 @@ providers:
   anthropic:
     api_key: ""   # 如果用 Claude 模型填这里 (sk-ant-xxx)
     base_url: ""
+    prompt_caching: true   # 自动缓存 system prompt + 工具定义，模型不支持时自动降级
   openai_compat:
-    api_key: "sk-2dffc60c896c4da5927d6f10248b9eac"
+    api_key: ""
     base_url: "https://api.deepseek.com/v1"
+    prompt_caching: true   # DeepSeek 服务端自动缓存，无需客户端注解
 
 # --- 可选 ---
 # model: "deepseek-v4-pro"
@@ -19,6 +21,31 @@ providers:
 # max_iterations: 50
 # max_llm_retries: 3        # LLM API 调用重试次数（429/5xx/超时）
 # bash_timeout_seconds: 120
+
+# --- 扩展思考 (Extended Thinking) ---
+# /thinking 命令切换开关，让 LLM 在复杂任务时进行内部推理
+thinking:
+  enabled: false            # 默认关闭，用 /thinking 命令可开关
+  budget_tokens: 4000       # 思考 token 预算，越大思考越深但越慢
+
+# --- 结构化输出 ---
+# response_format: null     # null=auto, "json_object"=强制输出JSON
+# tool_choice: "auto"       # "auto"=自动, "any"=强制调工具, "none"=禁工具
+
+# --- Windows 沙箱 (Sandbox) ---
+# /sandbox 命令开关，低完整性进程隔离 Bash 命令
+sandbox:
+  enabled: false            # 默认关闭，用 /sandbox on 开启
+  allowlist_paths: []       # 允许写入的目录（空=仅项目目录）
+  block_network: false      # 是否禁止网络访问
+
+# --- 工作树隔离 (Worktree) ---
+# /worktree 命令管理，在高风险操作前创建隔离 git worktree
+worktree:
+  enabled: true             # 总开关
+  worktrees_dir: ".tudou_agent/worktrees"   # worktree 存放目录（若在 repo 内则自动切到 /tmp）
+  auto_cleanup: false       # 退出时自动删除 worktree
+  max_worktrees: 10         # 最大并发 worktree 数量
 
 # --- 远程控制 (飞书Bot中继) ---
 # 使用飞书Bot作为消息中转，无需内网穿透
@@ -29,8 +56,8 @@ providers:
 # /remote status 查看连接状态
 remote:
   feishu:
-    app_id: "cli_aa980bdb87a11cda"
-    app_secret: "lWT7ETEhbjGMTB6u8DAwMXgOItLVYdNf"
+    app_id: ""
+    app_secret: ""
     base_url: "https://open.feishu.cn/open-apis"
 
 # --- MCP (Model Context Protocol) ---

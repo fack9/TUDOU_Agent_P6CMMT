@@ -20,36 +20,76 @@ class AnthropicProvider:
             kwargs['base_url'] = self.base_url
         self._client = anthropic.Anthropic(**kwargs)
 
-    def complete(self, messages: list[dict], tools: list[dict] | None=None, model: str='claude-sonnet-4-6-20250514', on_token=None) -> LLMResponse:
+    def complete(self, messages: list[dict], tools: list[dict] | None=None, model: str='claude-sonnet-4-6-20250514', on_token=None, thinking_budget: int | None=None, prompt_caching: bool=True, response_format: str | None=None, tool_choice: str='auto') -> LLMResponse:
         if on_token is not None:
-            return self._complete_stream(messages, tools=tools, model=model, on_token=on_token)
-        system, chat_messages = self._split_system(messages)
-        anthropic_tools = self._convert_tools(tools) if tools else None
-        kwargs = dict(model=model, max_tokens=self.max_tokens, messages=chat_messages)
-        if system:
-            kwargs['system'] = system
-        if anthropic_tools:
-            kwargs['tools'] = anthropic_tools
-        response = self._client.messages.create(**kwargs)
+            return self._complete_stream(messages, tools=tools, model=model, on_token=on_token, thinking_budget=thinking_budget, prompt_caching=prompt_caching, tool_choice=tool_choice)
+
+        def _call(use_cache: bool):
+            system, chat_messages = self._split_system(messages)
+            anthropic_tools = self._convert_tools(tools, prompt_caching=use_cache) if tools else None
+            if system and use_cache:
+                system = [{'type': 'text', 'text': system, 'cache_control': {'type': 'ephemeral'}}]
+            kwargs = dict(model=model, max_tokens=self.max_tokens, messages=chat_messages)
+            if system:
+                kwargs['system'] = system
+            if anthropic_tools:
+                kwargs['tools'] = anthropic_tools
+            if thinking_budget:
+                kwargs['thinking'] = {'type': 'enabled', 'budget_tokens': thinking_budget}
+            if tool_choice and tool_choice != 'auto':
+                kwargs['tool_choice'] = {'type': tool_choice}
+            return self._client.messages.create(**kwargs), model
+
+        if prompt_caching:
+            try:
+                response, _ = _call(True)
+                return self._parse_response(response, model)
+            except Exception as e:
+                if self._is_cache_error(e):
+                    response, _ = _call(False)
+                    return self._parse_response(response, model)
+                raise
+        response, _ = _call(False)
         return self._parse_response(response, model)
 
-    def _complete_stream(self, messages: list[dict], tools: list[dict] | None, model: str, on_token) -> LLMResponse:
-        system, chat_messages = self._split_system(messages)
-        anthropic_tools = self._convert_tools(tools) if tools else None
-        kwargs = dict(model=model, max_tokens=self.max_tokens, messages=chat_messages, stream=True)
-        if system:
-            kwargs['system'] = system
-        if anthropic_tools:
-            kwargs['tools'] = anthropic_tools
-        stream = self._client.messages.create(**kwargs)
+    def _complete_stream(self, messages: list[dict], tools: list[dict] | None, model: str, on_token, thinking_budget: int | None=None, prompt_caching: bool=True, tool_choice: str='auto') -> LLMResponse:
+        def _build_kwargs(use_cache: bool):
+            system, chat_messages = self._split_system(messages)
+            anthropic_tools = self._convert_tools(tools, prompt_caching=use_cache) if tools else None
+            if system and use_cache:
+                system = [{'type': 'text', 'text': system, 'cache_control': {'type': 'ephemeral'}}]
+            kwargs = dict(model=model, max_tokens=self.max_tokens, messages=chat_messages, stream=True)
+            if system:
+                kwargs['system'] = system
+            if anthropic_tools:
+                kwargs['tools'] = anthropic_tools
+            if thinking_budget:
+                kwargs['thinking'] = {'type': 'enabled', 'budget_tokens': thinking_budget}
+            if tool_choice and tool_choice != 'auto':
+                kwargs['tool_choice'] = {'type': tool_choice}
+            return kwargs
+
+        if prompt_caching:
+            try:
+                stream = self._client.messages.create(**_build_kwargs(True))
+            except Exception as e:
+                if self._is_cache_error(e):
+                    stream = self._client.messages.create(**_build_kwargs(False))
+                else:
+                    raise
+        else:
+            stream = self._client.messages.create(**_build_kwargs(False))
         content = ''
         tool_calls = []
         reasoning_parts = []
         input_tokens = 0
         output_tokens = 0
+        cache_read = 0
+        cache_write = 0
         stop_reason = 'end_turn'
         cur_type = None
         cur_text = ''
+        cur_thinking_text = ''
         cur_tool_id = None
         cur_tool_name = None
         cur_tool_json = ''
@@ -57,7 +97,10 @@ class AnthropicProvider:
             et = event.type
             if et == 'message_start':
                 if hasattr(event.message, 'usage') and event.message.usage:
-                    input_tokens = event.message.usage.input_tokens
+                    usage = event.message.usage
+                    input_tokens = usage.input_tokens
+                    cache_read = getattr(usage, 'cache_read_input_tokens', 0)
+                    cache_write = getattr(usage, 'cache_creation_input_tokens', 0)
             elif et == 'content_block_start':
                 block = event.content_block
                 if block.type == 'text':
@@ -68,8 +111,12 @@ class AnthropicProvider:
                     cur_tool_id = block.id
                     cur_tool_name = block.name
                     cur_tool_json = ''
-                elif block.type in ('thinking', 'redacted_thinking'):
-                    cur_type = block.type
+                elif block.type == 'thinking':
+                    cur_type = 'thinking'
+                    cur_thinking_text = ''
+                elif block.type == 'redacted_thinking':
+                    cur_type = 'redacted_thinking'
+                    cur_thinking_text = ''
             elif et == 'content_block_delta':
                 delta = event.delta
                 if delta.type == 'text_delta':
@@ -78,6 +125,10 @@ class AnthropicProvider:
                         on_token(delta.text)
                 elif delta.type == 'input_json_delta':
                     cur_tool_json += delta.partial_json
+                elif delta.type == 'thinking_delta':
+                    cur_thinking_text += delta.thinking
+                elif delta.type == 'signature_delta':
+                    pass
             elif et == 'content_block_stop':
                 if cur_type == 'text':
                     content += cur_text
@@ -88,14 +139,17 @@ class AnthropicProvider:
                         arguments = {}
                     tool_calls.append(ToolCall(id=cur_tool_id, name=cur_tool_name, arguments=arguments))
                 elif cur_type == 'thinking':
-                    reasoning_parts.append(cur_text if hasattr(self, '_cur_thinking') else '')
+                    if cur_thinking_text:
+                        reasoning_parts.append(cur_thinking_text)
+                elif cur_type == 'redacted_thinking':
+                    reasoning_parts.append('[redacted]')
                 cur_type = None
             elif et == 'message_delta':
                 stop_reason = event.delta.stop_reason or 'end_turn'
                 if hasattr(event, 'usage') and event.usage:
                     output_tokens = event.usage.output_tokens
         reasoning = '\n'.join(reasoning_parts) if reasoning_parts else ''
-        return LLMResponse(content=content, tool_calls=tool_calls if tool_calls else None, usage=TokenUsage(input=input_tokens, output=output_tokens), model=model, finish_reason=stop_reason, reasoning_content=reasoning)
+        return LLMResponse(content=content, tool_calls=tool_calls if tool_calls else None, usage=TokenUsage(input=input_tokens, output=output_tokens, cache_read=cache_read, cache_write=cache_write), model=model, finish_reason=stop_reason, reasoning_content=reasoning)
 
     def count_tokens(self, messages: list[dict]) -> int:
         try:
@@ -138,12 +192,14 @@ class AnthropicProvider:
             return {'role': 'assistant', 'content': content_blocks}
         return {'role': role, 'content': str(content)}
 
-    def _convert_tools(self, tools: list[dict]) -> list[dict]:
+    def _convert_tools(self, tools: list[dict], prompt_caching: bool=True) -> list[dict]:
         anthropic_tools = []
         for tool in tools:
             if tool.get('type') == 'function':
                 func = tool['function']
                 anthropic_tools.append({'name': func['name'], 'description': func.get('description', ''), 'input_schema': func.get('parameters', {'type': 'object', 'properties': {}})})
+        if anthropic_tools and prompt_caching:
+            anthropic_tools[-1]['cache_control'] = {'type': 'ephemeral'}
         return anthropic_tools
 
     def _parse_response(self, response, model: str) -> LLMResponse:
@@ -160,7 +216,16 @@ class AnthropicProvider:
             elif block.type == 'redacted_thinking':
                 reasoning_parts.append('[redacted]')
         reasoning = '\n'.join(reasoning_parts) if reasoning_parts else ''
-        return LLMResponse(content=content, tool_calls=tool_calls if tool_calls else None, usage=TokenUsage(input=response.usage.input_tokens, output=response.usage.output_tokens), model=model, finish_reason=response.stop_reason or 'end_turn', reasoning_content=reasoning)
+        usage = response.usage
+        cache_read = getattr(usage, 'cache_read_input_tokens', 0) if usage else 0
+        cache_write = getattr(usage, 'cache_creation_input_tokens', 0) if usage else 0
+        return LLMResponse(content=content, tool_calls=tool_calls if tool_calls else None, usage=TokenUsage(input=usage.input_tokens if usage else 0, output=usage.output_tokens if usage else 0, cache_read=cache_read, cache_write=cache_write), model=model, finish_reason=response.stop_reason or 'end_turn', reasoning_content=reasoning)
+
+    @staticmethod
+    def _is_cache_error(error: Exception) -> bool:
+        """Detect errors caused by unsupported cache_control. Retry without caching."""
+        msg = str(error).lower()
+        return any(kw in msg for kw in ['cache_control', 'ephemeral'])
 
     def _estimate_tokens(self, messages: list[dict]) -> int:
         total = 0

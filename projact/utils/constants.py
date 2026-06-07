@@ -1,4 +1,4 @@
-VERSION = '1.18.7.9'
+VERSION = '2.12.0.1'
 APP_NAME = 'TUDOU_agent'
 DEFAULT_CONFIG_DIR = '~/.tudou_agent'
 DEFAULT_CONFIG_FILE = 'config.yaml'

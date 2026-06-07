@@ -23,11 +23,13 @@ class ContextManager:
         self._memory_content = load_memory_context(self.memory_dir)
         self._loaded = True
 
-    def build_system_prompt(self, tool_definitions: str='') -> str:
+    def build_system_prompt(self, tool_definitions: str='', worktree_path: str='') -> str:
         self.load()
         parts = [self.system_prompt]
         parts.append(f'\n## Paths')
         parts.append(f'- Working directory: {self.working_dir}')
+        if worktree_path:
+            parts.append(f'- **ISOLATED WORKTREE**: All file and bash operations are confined to {worktree_path}. Use EnterWorktree/ExitWorktree to manage isolation.')
         if self.memory_dir:
             parts.append(f'- Memory directory: {self.memory_dir}')
         if tool_definitions:
@@ -49,12 +51,12 @@ class ContextManager:
     def clear_history(self):
         self._history.clear()
 
-    def build_messages(self, user_input: str, tools: list[dict] | None=None, system_extra: str='') -> list[dict]:
+    def build_messages(self, user_input: str, tools: list[dict] | None=None, system_extra: str='', worktree_path: str='') -> list[dict]:
         self.load()
         tool_descriptions = ''
         if tools:
             tool_descriptions = self._format_tools_for_prompt(tools)
-        system_content = self.build_system_prompt(tool_descriptions)
+        system_content = self.build_system_prompt(tool_descriptions, worktree_path=worktree_path)
         if system_extra:
             system_content += f'\n\n{system_extra}'
         messages = [{'role': 'system', 'content': system_content}]

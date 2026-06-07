@@ -26,11 +26,13 @@ class WebFetchTool(BaseTool):
     def _has_extraction_llm(self) -> bool:
         return bool(self._llm or (self._extraction_api_key and self._extraction_base_url))
 
-    def execute(self, url: str, prompt: str | None=None, extract: bool=False) -> ToolResult:
+    def execute(self, url: str, prompt: str | None=None, extract: bool=False, on_output=None) -> ToolResult:
         if httpx is None:
             return ToolResult(success=False, output='', error='httpx is required for web fetch')
 
         # --- fetch raw content (with cache) ---
+        if on_output:
+            on_output(f'Fetching {url}...')
         raw_content = self._fetch_raw(url)
         if raw_content is None:
             return ToolResult(success=False, output='', error=f'Fetch failed: {url}')
@@ -40,6 +42,12 @@ class WebFetchTool(BaseTool):
 
         content, final_url, status_code, content_type, cache_hit = raw_content
 
+        if on_output:
+            if cache_hit:
+                on_output(f'  (cached) {status_code} {content_type}')
+            else:
+                on_output(f'  {status_code} {content_type} | {len(content)} chars')
+
         # --- AssistLLM extraction ---
         if extract:
             if not self._has_extraction_llm():
@@ -48,6 +56,8 @@ class WebFetchTool(BaseTool):
             if not prompt:
                 return ToolResult(success=False, output='',
                                   error='extract=true requires a prompt describing what to extract.')
+            if on_output:
+                on_output(f'  Extracting with LLM...')
             try:
                 extracted = self._extract_with_llm(content, prompt)
             except Exception as e:

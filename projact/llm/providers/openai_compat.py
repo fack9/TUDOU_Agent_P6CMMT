@@ -14,19 +14,27 @@ class OpenAICompatProvider:
         key = self.api_key or os.environ.get('OPENAI_API_KEY', 'not-needed')
         self._client = OpenAI(api_key=key, base_url=self.base_url)
 
-    def complete(self, messages: list[dict], tools: list[dict] | None=None, model: str='gpt-4o', on_token=None) -> LLMResponse:
+    def complete(self, messages: list[dict], tools: list[dict] | None=None, model: str='gpt-4o', on_token=None, thinking_budget: int | None=None, prompt_caching: bool=True, response_format: str | None=None, tool_choice: str='auto') -> LLMResponse:
         if on_token is not None:
-            return self._complete_stream(messages, tools=tools, model=model, on_token=on_token)
+            return self._complete_stream(messages, tools=tools, model=model, on_token=on_token, thinking_budget=thinking_budget, prompt_caching=prompt_caching, tool_choice=tool_choice)
         kwargs = dict(model=model, messages=messages, max_tokens=self.max_tokens)
         if tools:
             kwargs['tools'] = tools
+            kwargs['tool_choice'] = tool_choice
+        if thinking_budget:
+            kwargs['extra_body'] = {'thinking': {'type': 'enabled', 'budget_tokens': thinking_budget}}
+        if response_format:
+            kwargs['response_format'] = {'type': response_format}
         response = self._client.chat.completions.create(**kwargs)
         return self._parse_response(response, model)
 
-    def _complete_stream(self, messages: list[dict], tools: list[dict] | None, model: str, on_token) -> LLMResponse:
-        kwargs = dict(model=model, messages=messages, max_tokens=self.max_tokens, stream=True)
+    def _complete_stream(self, messages: list[dict], tools: list[dict] | None, model: str, on_token, thinking_budget: int | None=None, prompt_caching: bool=True, tool_choice: str='auto') -> LLMResponse:
+        kwargs = dict(model=model, messages=messages, max_tokens=self.max_tokens, stream=True, stream_options={'include_usage': True})
         if tools:
             kwargs['tools'] = tools
+            kwargs['tool_choice'] = tool_choice
+        if thinking_budget:
+            kwargs['extra_body'] = {'thinking': {'type': 'enabled', 'budget_tokens': thinking_budget}}
         stream = self._client.chat.completions.create(**kwargs)
         content = ''
         tool_calls_dict: dict[int, dict] = {}
@@ -58,6 +66,9 @@ class OpenAICompatProvider:
                         tool_calls_dict[idx]['arguments'] += tc_chunk.function.arguments
             if chunk.choices[0].finish_reason:
                 finish_reason = chunk.choices[0].finish_reason
+            if hasattr(chunk, 'usage') and chunk.usage:
+                input_tokens = chunk.usage.prompt_tokens or 0
+                output_tokens = chunk.usage.completion_tokens or 0
         tool_calls = []
         for idx in sorted(tool_calls_dict.keys()):
             tc_data = tool_calls_dict[idx]
