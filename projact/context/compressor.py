@@ -3,6 +3,12 @@ class ContextCompressor:
     def __init__(self, llm_client=None, summary_model: str = 'claude-haiku-4-5'):
         self._llm = llm_client
         self._summary_model = summary_model
+        self._archive: dict[int, list[dict]] = {}  # compressed-out originals, retrievable by ID
+        self._archive_counter = 0
+
+    def retrieve_archive(self, archive_id: int) -> list[dict] | None:
+        """Return original messages for a compressed archive, or None if evicted."""
+        return self._archive.get(archive_id)
 
     def compress(self, messages: list[dict]) -> list[dict]:
         if len(messages) <= 14:
@@ -13,12 +19,22 @@ class ContextCompressor:
         middle = body[:-len(tail)] if tail else body
         if not middle:
             return messages
+        # Save originals before trimming/compressing
+        self._archive_counter += 1
+        archive_id = self._archive_counter
+        self._archive[archive_id] = list(middle)
+        # Clean up old archives (keep last 5)
+        while len(self._archive) > 5:
+            oldest = min(self._archive.keys())
+            del self._archive[oldest]
+        middle = self._trim_tool_results(middle)
         summaries = self._summarize_groups(middle, turns_per_group=3)
         summary_text = '\n---\n'.join(summaries) if summaries else self._simple_summary(middle)
         result = []
         if sys_msg:
             result.append(sys_msg)
-        result.append({'role': 'user', 'content': f'<conversation_summary>\n{summary_text}\n</conversation_summary>'})
+        result.append({'role': 'user', 'content':
+            f'<conversation_summary id={archive_id}>\n{summary_text}\n</conversation_summary>'})
         result.extend(tail)
         return result
 
@@ -29,11 +45,21 @@ class ContextCompressor:
         body = messages[1:] if sys_msg else messages
         tail = self._extract_tail(body, keep_turns=3)
         middle = body[:-len(tail)] if tail else body
+        if not middle:
+            return messages
+        self._archive_counter += 1
+        archive_id = self._archive_counter
+        self._archive[archive_id] = list(middle)
+        while len(self._archive) > 5:
+            oldest = min(self._archive.keys())
+            del self._archive[oldest]
+        middle = self._trim_tool_results(middle)
         summary = self._llm_summarize(middle, turns_per_group=5)
         result = []
         if sys_msg:
             result.append(sys_msg)
-        result.append({'role': 'user', 'content': f'<conversation_summary>\n{summary}\n</conversation_summary>'})
+        result.append({'role': 'user', 'content':
+            f'<conversation_summary id={archive_id}>\n{summary}\n</conversation_summary>'})
         result.extend(tail)
         return result
 
@@ -162,6 +188,28 @@ class ContextCompressor:
             elif role == 'tool' and content:
                 lines.append(f'- Tool result: {content[:150]}')
         return 'Earlier conversation:\n' + '\n'.join(lines[:20]) if lines else ''
+
+    @staticmethod
+    def _trim_tool_results(messages: list[dict]) -> list[dict]:
+        """Drop old tool-result messages to save space before summarizing.
+        Keeps tool results from the most recent 2 turns; drops the rest."""
+        # Find the last 2 user-message boundaries
+        user_positions = []
+        for i, m in enumerate(messages):
+            if m.get('role') == 'user':
+                user_positions.append(i)
+        if len(user_positions) <= 2:
+            return messages  # not enough turns to trim
+        cutoff = user_positions[-2]  # keep from 2nd-to-last user onward
+        trimmed = []
+        for i, m in enumerate(messages):
+            if i >= cutoff:
+                trimmed.append(m)
+            elif m.get('role') == 'tool':
+                continue  # drop old tool results
+            else:
+                trimmed.append(m)
+        return trimmed
 
     @staticmethod
     def _content_snippet(msg: dict, max_len: int = 300) -> str:

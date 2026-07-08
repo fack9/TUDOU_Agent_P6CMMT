@@ -25,10 +25,13 @@ class AnthropicProvider:
             return self._complete_stream(messages, tools=tools, model=model, on_token=on_token, thinking_budget=thinking_budget, prompt_caching=prompt_caching, tool_choice=tool_choice)
 
         def _call(use_cache: bool):
-            system, chat_messages = self._split_system(messages)
+            system, chat_messages = self._split_system(messages, prompt_caching=use_cache)
             anthropic_tools = self._convert_tools(tools, prompt_caching=use_cache) if tools else None
-            if system and use_cache:
-                system = [{'type': 'text', 'text': system, 'cache_control': {'type': 'ephemeral'}}]
+            if system:
+                system_block = [{'type': 'text', 'text': system}]
+                if use_cache:
+                    system_block[0]['cache_control'] = {'type': 'ephemeral'}
+                system = system_block
             kwargs = dict(model=model, max_tokens=self.max_tokens, messages=chat_messages)
             if system:
                 kwargs['system'] = system
@@ -37,7 +40,12 @@ class AnthropicProvider:
             if thinking_budget:
                 kwargs['thinking'] = {'type': 'enabled', 'budget_tokens': thinking_budget}
             if tool_choice and tool_choice != 'auto':
-                kwargs['tool_choice'] = {'type': tool_choice}
+                if isinstance(tool_choice, dict):
+                    kwargs['tool_choice'] = tool_choice
+                else:
+                    kwargs['tool_choice'] = {'type': tool_choice}
+            if response_format:
+                kwargs['response_format'] = response_format if isinstance(response_format, dict) else {'type': response_format}
             return self._client.messages.create(**kwargs), model
 
         if prompt_caching:
@@ -54,10 +62,13 @@ class AnthropicProvider:
 
     def _complete_stream(self, messages: list[dict], tools: list[dict] | None, model: str, on_token, thinking_budget: int | None=None, prompt_caching: bool=True, tool_choice: str='auto') -> LLMResponse:
         def _build_kwargs(use_cache: bool):
-            system, chat_messages = self._split_system(messages)
+            system, chat_messages = self._split_system(messages, prompt_caching=use_cache)
             anthropic_tools = self._convert_tools(tools, prompt_caching=use_cache) if tools else None
-            if system and use_cache:
-                system = [{'type': 'text', 'text': system, 'cache_control': {'type': 'ephemeral'}}]
+            if system:
+                system_block = [{'type': 'text', 'text': system}]
+                if use_cache:
+                    system_block[0]['cache_control'] = {'type': 'ephemeral'}
+                system = system_block
             kwargs = dict(model=model, max_tokens=self.max_tokens, messages=chat_messages, stream=True)
             if system:
                 kwargs['system'] = system
@@ -66,7 +77,12 @@ class AnthropicProvider:
             if thinking_budget:
                 kwargs['thinking'] = {'type': 'enabled', 'budget_tokens': thinking_budget}
             if tool_choice and tool_choice != 'auto':
-                kwargs['tool_choice'] = {'type': tool_choice}
+                if isinstance(tool_choice, dict):
+                    kwargs['tool_choice'] = tool_choice
+                else:
+                    kwargs['tool_choice'] = {'type': tool_choice}
+            if response_format:
+                kwargs['response_format'] = response_format if isinstance(response_format, dict) else {'type': response_format}
             return kwargs
 
         if prompt_caching:
@@ -162,7 +178,7 @@ class AnthropicProvider:
         except Exception:
             return self._estimate_tokens(messages)
 
-    def _split_system(self, messages: list[dict]) -> tuple[str | None, list[dict]]:
+    def _split_system(self, messages: list[dict], prompt_caching: bool = False) -> tuple[str | None, list[dict]]:
         system_parts = []
         chat = []
         for msg in messages:
@@ -175,22 +191,68 @@ class AnthropicProvider:
         system = '\n\n'.join(system_parts) if system_parts else None
         if system is not None and len(system.strip()) == 0:
             system = None
+
+        # Cache stable conversation history: cache all but the last 3 messages
+        # (last turn's assistant + tool_result + current user query)
+        if prompt_caching and len(chat) >= 5:
+            cache_idx = len(chat) - 3
+            content = chat[cache_idx].get('content', '')
+            if isinstance(content, str) and content:
+                chat[cache_idx]['content'] = [
+                    {'type': 'text', 'text': content, 'cache_control': {'type': 'ephemeral'}}
+                ]
+            elif isinstance(content, list) and content:
+                content[-1]['cache_control'] = {'type': 'ephemeral'}
+
         return (system, chat)
 
     def _convert_message(self, msg: dict) -> dict:
         role = msg['role']
         content = msg.get('content', '')
+
+        # Convert list content blocks (images etc.) to Anthropic format
+        converted = self._convert_content(content)
+
         if role == 'tool':
-            tool_result = {'type': 'tool_result', 'tool_use_id': msg.get('tool_call_id', ''), 'content': str(content)}
+            tool_result = {'type': 'tool_result', 'tool_use_id': msg.get('tool_call_id', ''), 'content': converted}
             return {'role': 'user', 'content': [tool_result]}
         if role == 'assistant' and msg.get('tool_calls'):
             content_blocks = []
-            if content:
-                content_blocks.append({'type': 'text', 'text': str(content)})
+            if isinstance(converted, list):
+                content_blocks = converted
+            elif converted:
+                content_blocks.append({'type': 'text', 'text': str(converted)})
             for tc in msg['tool_calls']:
                 content_blocks.append({'type': 'tool_use', 'id': tc.get('id', ''), 'name': tc['function']['name'], 'input': json.loads(tc['function']['arguments']) if isinstance(tc['function']['arguments'], str) else tc['function']['arguments']})
             return {'role': 'assistant', 'content': content_blocks}
-        return {'role': role, 'content': str(content)}
+        if isinstance(converted, list):
+            return {'role': role, 'content': converted}
+        return {'role': role, 'content': str(converted) if converted else ''}
+
+    def _convert_content(self, content):
+        """Convert content (str or list of blocks) to Anthropic format."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            result = []
+            for block in content:
+                if isinstance(block, dict):
+                    bt = block.get('type', '')
+                    if bt == 'text':
+                        result.append({'type': 'text', 'text': block.get('text', '')})
+                    elif bt == 'image':
+                        result.append({
+                            'type': 'image',
+                            'source': {
+                                'type': 'base64',
+                                'media_type': block['source']['media_type'],
+                                'data': block['source']['data'],
+                            }
+                        })
+                    else:
+                        result.append(block)
+            return result if result else str(content)
+        return str(content)
 
     def _convert_tools(self, tools: list[dict], prompt_caching: bool=True) -> list[dict]:
         anthropic_tools = []

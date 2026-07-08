@@ -9,6 +9,7 @@ class ToolResult:
     output: str
     error: str | None = None
     metadata: dict | None = None
+    images: list[dict] | None = None
 
 class BaseTool(ABC):
     name: str = ''

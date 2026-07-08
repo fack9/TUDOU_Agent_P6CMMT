@@ -80,11 +80,20 @@ class MemoryManager:
         index = self.load_index()
         if not index.strip():
             return ''
-        lines = [index.strip()]
+        lines = ['## Memory Index', '', index.strip()]
         recent = self.list_files()[:5]
-        for f in recent:
-            mem = self.load(f.name)
-            if mem:
-                snippet = mem['content'][:300]
-                lines.append(f'\n<!-- {f.name} -->\n{snippet}')
+        if recent:
+            entries = []
+            for f in recent:
+                mem = self.load(f.name)
+                if mem:
+                    date_str = f.stem[:10] if len(f.stem) >= 10 else f.stem
+                    mtype = mem.get('type', 'project')
+                    name = mem.get('name', '')
+                    snippet = mem['content'][:250].replace('\n', ' ').strip()
+                    entries.append(f'- [{mtype}] **{name}** ({date_str}): {snippet}')
+            if entries:
+                lines.append('')
+                lines.append('## Recent Memories')
+                lines.extend(entries)
         return '\n'.join(lines)

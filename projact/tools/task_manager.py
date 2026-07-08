@@ -12,15 +12,24 @@ class Task:
     status: str = 'pending'
     active_form: str = ''
     created_at: float = field(default_factory=time.time)
+    started_at: float = 0.0
+    completed_at: float = 0.0
     blocks: list[str] = field(default_factory=list)
     blocked_by: list[str] = field(default_factory=list)
 
+    @property
+    def elapsed(self) -> float:
+        if self.started_at:
+            end = self.completed_at or time.time()
+            return end - self.started_at
+        return 0.0
+
     def to_dict(self):
-        return {'id': self.id, 'subject': self.subject, 'description': self.description, 'status': self.status, 'active_form': self.active_form, 'created_at': self.created_at, 'blocks': self.blocks, 'blocked_by': self.blocked_by}
+        return {'id': self.id, 'subject': self.subject, 'description': self.description, 'status': self.status, 'active_form': self.active_form, 'created_at': self.created_at, 'started_at': self.started_at, 'completed_at': self.completed_at, 'blocks': self.blocks, 'blocked_by': self.blocked_by}
 
     @classmethod
     def from_dict(cls, d):
-        return cls(id=d['id'], subject=d['subject'], description=d['description'], status=d.get('status', 'pending'), active_form=d.get('active_form', ''), created_at=d.get('created_at', 0), blocks=d.get('blocks', []), blocked_by=d.get('blocked_by', []))
+        return cls(id=d['id'], subject=d['subject'], description=d['description'], status=d.get('status', 'pending'), active_form=d.get('active_form', ''), created_at=d.get('created_at', 0), started_at=d.get('started_at', 0.0), completed_at=d.get('completed_at', 0.0), blocks=d.get('blocks', []), blocked_by=d.get('blocked_by', []))
 
 
 class TaskManager:
@@ -74,6 +83,11 @@ class TaskManager:
         if not task:
             return None
         if status is not None:
+            if task.status != status:
+                if status == 'in_progress' and not task.started_at:
+                    task.started_at = time.time()
+                elif status == 'completed' and not task.completed_at:
+                    task.completed_at = time.time()
             task.status = status
         if subject is not None:
             task.subject = subject

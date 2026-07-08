@@ -13,13 +13,18 @@ class TokenTracker:
         self.max_history_turns = max_history_turns
         self.cumulative_input = 0
         self.cumulative_output = 0
+        self.cumulative_cache_read = 0
+        self.cumulative_cache_write = 0
         self.compression_count = 0
         self._msg_hash: int = -1
         self._cached_estimate: int = 0
+        self._last_ratio: float = 0.0
 
     def update_after_llm_call(self, usage: TokenUsage):
         self.cumulative_input += usage.input
         self.cumulative_output += usage.output
+        self.cumulative_cache_read += usage.cache_read
+        self.cumulative_cache_write += usage.cache_write
         self.budget.add(usage.input)
 
     def estimate_messages(self, messages: list[dict]) -> int:
@@ -37,11 +42,13 @@ class TokenTracker:
         return max(0, self.budget.remaining)
 
     def usage_ratio(self) -> float:
-        return self.budget.usage_ratio
+        # Return the latest per-turn estimate ratio (not cumulative)
+        return self._last_ratio
 
     def should_compress(self, messages: list[dict], turn_count: int) -> tuple[bool, bool]:
         est = self.estimate_messages(messages)
         ratio = est / self.budget.max_tokens if self.budget.max_tokens else 0
+        self._last_ratio = ratio  # per-turn ratio for accurate display
         urgent = ratio >= self.urgent_threshold
         if urgent:
             return (True, True)

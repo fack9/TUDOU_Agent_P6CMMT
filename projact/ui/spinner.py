@@ -16,8 +16,15 @@ class TUDOU_spinner:
         self._running = False
         self._thread: threading.Thread | None = None
         self._start_time = 0.0
+        self._custom_message: str | None = None
+
+    def set_status(self, text: str | None = None):
+        """Set a custom status message. Set to None to restore rotating messages."""
+        self._custom_message = text
 
     def start(self):
+        if self._running:
+            return
         self._running = True
         self._start_time = time.time()
         self._thread = threading.Thread(target=self._animate, daemon=True)
@@ -54,8 +61,11 @@ class TUDOU_spinner:
         while self._running:
             elapsed = time.time() - self._start_time
             elapsed_int = int(elapsed)
-            msg_idx = int(elapsed / self.MESSAGE_INTERVAL) % len(self.MESSAGES)
-            message = self.MESSAGES[msg_idx]
+            if self._custom_message:
+                message = self._custom_message
+            else:
+                msg_idx = int(elapsed / self.MESSAGE_INTERVAL) % len(self.MESSAGES)
+                message = self.MESSAGES[msg_idx]
             frame = self.frames[idx % len(self.frames)]
             display = f'  {frame} {message} (doing for {elapsed_int}s)  '
             if self._color:

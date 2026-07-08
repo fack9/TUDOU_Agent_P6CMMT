@@ -34,7 +34,7 @@ class MCPClient:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
+                text=True, encoding='utf-8', errors='replace',
                 cwd=self.cwd or os.getcwd(),
                 env=full_env,
             )
@@ -50,30 +50,42 @@ class MCPClient:
 
         def _drain_stderr():
             while self._running:
-                line = self._process.stderr.readline()
+                try:
+                    line = self._process.stderr.readline()
+                except (ValueError, OSError):
+                    break
                 if not line:
                     break
                 print('[MCP:{}] {}'.format(self.name, line.rstrip()), file=sys.stderr)
 
-        threading.Thread(target=_drain_stderr, daemon=True).start()
+        self._stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        self._stderr_thread.start()
 
     def _read_loop(self):
         while self._running:
-            line = self._process.stdout.readline()
+            try:
+                line = self._process.stdout.readline()
+            except (ValueError, OSError):
+                break  # pipe closed during shutdown
             if not line:
                 break
             try:
                 msg = json.loads(line)
             except json.JSONDecodeError:
+                print('[MCP:{}] JSON decode error: {}'.format(
+                    self.name, line[:200].rstrip()), file=sys.stderr)
                 continue
             msg_id = msg.get('id')
-            if msg_id is not None and msg_id in self._pending:
-                event, holder = self._pending.pop(msg_id)
-                if 'error' in msg:
-                    holder['error'] = msg['error']
-                else:
-                    holder['result'] = msg.get('result', {})
-                event.set()
+            if msg_id is not None:
+                with self._lock:
+                    pending_entry = self._pending.pop(msg_id, None)
+                if pending_entry is not None:
+                    event, holder = pending_entry
+                    if 'error' in msg:
+                        holder['error'] = msg['error']
+                    else:
+                        holder['result'] = msg.get('result', {})
+                    event.set()
 
     def _send_request(self, method: str, params: dict | None = None, timeout: int = 30) -> dict:
         with self._lock:
@@ -87,9 +99,11 @@ class MCPClient:
                 self._process.stdin.write(json.dumps(req, ensure_ascii=False) + '\n')
                 self._process.stdin.flush()
             except (OSError, BrokenPipeError):
+                self._pending.pop(req_id, None)
                 raise ConnectionError('MCP server "{}" process has died'.format(self.name))
         if not event.wait(timeout=timeout):
-            self._pending.pop(req_id, None)
+            with self._lock:
+                self._pending.pop(req_id, None)
             raise TimeoutError(
                 'MCP server "{}" timed out on {} ({}s)'.format(self.name, method, timeout))
         if 'error' in holder:
@@ -101,8 +115,11 @@ class MCPClient:
     def _send_notification(self, method: str, params: dict | None = None):
         with self._lock:
             notif = {'jsonrpc': '2.0', 'method': method, 'params': params or {}}
-            self._process.stdin.write(json.dumps(notif, ensure_ascii=False) + '\n')
-            self._process.stdin.flush()
+            try:
+                self._process.stdin.write(json.dumps(notif, ensure_ascii=False) + '\n')
+                self._process.stdin.flush()
+            except (OSError, BrokenPipeError):
+                pass  # server already dead, notification is best-effort
 
     def initialize(self) -> dict:
         result = self._send_request('initialize', {
@@ -154,8 +171,11 @@ class MCPClient:
             try:
                 self._process.terminate()
                 self._process.wait(timeout=5)
-            except (subprocess.TimeoutExpired, OSError):
+            except subprocess.TimeoutExpired:
                 try:
                     self._process.kill()
-                except OSError:
+                    self._process.wait(timeout=3)
+                except (subprocess.TimeoutExpired, OSError):
                     pass
+            except OSError:
+                pass  # process already dead

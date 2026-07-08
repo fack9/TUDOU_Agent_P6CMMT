@@ -17,7 +17,8 @@ class OpenAICompatProvider:
     def complete(self, messages: list[dict], tools: list[dict] | None=None, model: str='gpt-4o', on_token=None, thinking_budget: int | None=None, prompt_caching: bool=True, response_format: str | None=None, tool_choice: str='auto') -> LLMResponse:
         if on_token is not None:
             return self._complete_stream(messages, tools=tools, model=model, on_token=on_token, thinking_budget=thinking_budget, prompt_caching=prompt_caching, tool_choice=tool_choice)
-        kwargs = dict(model=model, messages=messages, max_tokens=self.max_tokens)
+        converted_messages = self._convert_messages(messages)
+        kwargs = dict(model=model, messages=converted_messages, max_tokens=self.max_tokens)
         if tools:
             kwargs['tools'] = tools
             kwargs['tool_choice'] = tool_choice
@@ -29,7 +30,8 @@ class OpenAICompatProvider:
         return self._parse_response(response, model)
 
     def _complete_stream(self, messages: list[dict], tools: list[dict] | None, model: str, on_token, thinking_budget: int | None=None, prompt_caching: bool=True, tool_choice: str='auto') -> LLMResponse:
-        kwargs = dict(model=model, messages=messages, max_tokens=self.max_tokens, stream=True, stream_options={'include_usage': True})
+        converted_messages = self._convert_messages(messages)
+        kwargs = dict(model=model, messages=converted_messages, max_tokens=self.max_tokens, stream=True, stream_options={'include_usage': True})
         if tools:
             kwargs['tools'] = tools
             kwargs['tool_choice'] = tool_choice
@@ -80,6 +82,40 @@ class OpenAICompatProvider:
         if output_tokens == 0:
             output_tokens = len(content) // 4
         return LLMResponse(content=content, tool_calls=tool_calls if tool_calls else None, usage=TokenUsage(input=input_tokens, output=output_tokens), model=model, finish_reason=finish_reason, reasoning_content=reasoning)
+
+    def _convert_messages(self, messages: list[dict]) -> list[dict]:
+        """Convert internal message format (with image content blocks) to OpenAI format."""
+        result = []
+        for msg in messages:
+            content = msg.get('content', '')
+            converted_content = self._convert_content(content)
+            new_msg = {**msg, 'content': converted_content}
+            result.append(new_msg)
+        return result
+
+    def _convert_content(self, content):
+        """Convert image blocks from Anthropic format to OpenAI image_url format."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            result = []
+            for block in content:
+                if isinstance(block, dict):
+                    bt = block.get('type', '')
+                    if bt == 'text':
+                        result.append({'type': 'text', 'text': block.get('text', '')})
+                    elif bt == 'image':
+                        src = block.get('source', {})
+                        media_type = src.get('media_type', 'image/png')
+                        data = src.get('data', '')
+                        result.append({
+                            'type': 'image_url',
+                            'image_url': {'url': f'data:{media_type};base64,{data}'}
+                        })
+                    else:
+                        result.append(block)
+            return result if result else str(content)
+        return str(content)
 
     def count_tokens(self, messages: list[dict]) -> int:
         try:

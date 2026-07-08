@@ -242,7 +242,7 @@ def _run_plain(command: str, cwd: str, timeout: int,
 
     try:
         proc = subprocess.run(
-            command, shell=True, capture_output=True, text=True,
+            command, shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace',
             timeout=timeout, cwd=cwd,
             env={**os.environ, 'PAGER': 'cat', 'PYTHONUNBUFFERED': '1'},
         )

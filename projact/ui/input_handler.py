@@ -8,7 +8,7 @@ from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.layout import Layout, HSplit, VSplit, Window, Dimension, FloatContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.styles import Style
-SLASH_COMMANDS = ['/help', '/exit', '/quit', '/clear', '/model', '/tools', '/tasks', '/tudou', '/context', '/skills', '/activate', '/deactivate', '/importdangerskills', '/removeskills', '/config', '/history', '/memory', '/permissions', '/permission', '/mcp', '/setmapi', '/setmurl', '/setfid', '/setfas', '/thinking', '/sandbox', '/rootmodel', '/betterui', '/worktree', '/subagent', '/remote', '/buildCLI', '/resume', '/export']
+SLASH_COMMANDS = ['/help', '/exit', '/quit', '/clear', '/model', '/tools', '/tasks', '/tudou', '/context', '/skills', '/activate', '/deactivate', '/importdangerskills', '/removeskills', '/config', '/history', '/memory', '/permissions', '/permission', '/mcp', '/setmapi', '/setmurl', '/setfid', '/setfas', '/thinking', '/sandbox', '/rootmodel', '/quiet', '/worktree', '/subagent', '/remote', '/buildCLI', '/resume', '/export']
 
 SUBCOMMANDS = {
     '/history':    ['list', 'recent', 'show', 'LLM'],
@@ -73,7 +73,7 @@ class SlashCompleter(Completer):
                             yield Completion(str(p), start_position=-len(prefix), display=display)
             except Exception:
                 pass
-PROMPT_STYLE = Style.from_dict({'prompt': 'bold ansicyan', 'shell_prompt': 'bold yellow', 'separator': 'fg:ansibrightblack', 'planmode_sep': 'fg:#3355cc bold', 'codemode_sep': 'fg:#ccaa00 bold'})
+PROMPT_STYLE = Style.from_dict({'prompt': 'bold ansicyan', 'shell_prompt': 'bold yellow', 'separator': 'fg:ansibrightblack', 'planmode_sep': 'fg:#3355cc bold', 'codemode_sep': 'fg:#ccaa00 bold', 'status_ok': 'fg:ansibrightgreen', 'status_err': 'fg:ansired'})
 
 def _make_sep() -> str:
     return '─' * shutil.get_terminal_size().columns
@@ -92,10 +92,12 @@ def _make_codemode_top_sep() -> str:
 
 class _SepPromptSession(PromptSession):
 
-    def __init__(self, *args, get_plan_state=None, get_code_mode=None, get_shell_mode=None, **kwargs):
+    def __init__(self, *args, get_plan_state=None, get_code_mode=None, get_shell_mode=None, get_mcp_status=None, get_llm_status=None, **kwargs):
         self._get_plan_state = get_plan_state
         self._get_code_mode = get_code_mode
         self._get_shell_mode = get_shell_mode
+        self._get_mcp_status = get_mcp_status
+        self._get_llm_status = get_llm_status
         super().__init__(*args, **kwargs)
 
     def _create_application(self, *args, **kwargs):
@@ -181,8 +183,13 @@ class _SepPromptSession(PromptSession):
         def get_hint_line():
             if self._get_shell_mode and self._get_shell_mode():
                 return [('class:shell_prompt', '  /downshell  —  exit shell mode,  type any command to execute')]
-            cmds = '/help  /exit  /clear  /rootmodel  /betterui  /tools  /model  /skills  /mcp  /context  /remote  /tudou'
-            return [('class:separator', f'  {cmds}')]
+            cmds = '/help  /exit  /clear  /quiet  /tools  /model  /skills  /remote  /tudou'
+            mcp = self._get_mcp_status() if self._get_mcp_status else ''
+            llm = self._get_llm_status() if self._get_llm_status else ''
+            # Color logic: "unfound" with N>0 → red; "connected" or "0 unfound" → green
+            mcp_style = 'class:status_err' if (mcp and 'unfound' in str(mcp) and not str(mcp).startswith('0')) else 'class:status_ok'
+            llm_style = 'class:status_ok' if llm and str(llm) == 'True' else 'class:status_err'
+            return [('class:separator', f'  {cmds} '), (mcp_style, f'● MCP: {mcp}'), ('class:separator', ' '), (llm_style, f'● Model have:{llm}')]
 
         top_win = Window(height=1, dont_extend_height=True, content=FormattedTextControl(text=get_top_sep))
         bottom_sep = Window(height=1, dont_extend_height=True, content=FormattedTextControl(text=get_bottom_sep))
@@ -221,12 +228,12 @@ class _SepPromptSession(PromptSession):
 
 class InputHandler:
 
-    def __init__(self, history_file: Path | None=None, get_plan_state=None, get_code_mode=None, get_shell_mode=None):
+    def __init__(self, history_file: Path | None=None, get_plan_state=None, get_code_mode=None, get_shell_mode=None, get_mcp_status=None, get_llm_status=None):
         history = None
         if history_file:
             history_file.parent.mkdir(parents=True, exist_ok=True)
             history = FileHistory(str(history_file))
-        self.session = _SepPromptSession(history=history, auto_suggest=AutoSuggestFromHistory(), completer=SlashCompleter(), style=PROMPT_STYLE, multiline=False, get_plan_state=get_plan_state, get_code_mode=get_code_mode, get_shell_mode=get_shell_mode)
+        self.session = _SepPromptSession(history=history, auto_suggest=AutoSuggestFromHistory(), completer=SlashCompleter(), style=PROMPT_STYLE, multiline=False, get_plan_state=get_plan_state, get_code_mode=get_code_mode, get_shell_mode=get_shell_mode, get_mcp_status=get_mcp_status, get_llm_status=get_llm_status)
 
     def get_input(self) -> str:
         session = self.session

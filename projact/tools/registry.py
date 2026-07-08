@@ -24,6 +24,9 @@ class ToolRegistry:
         self._tools[name] = ToolDef(name=name, description=description, parameters=parameters, handler=handler, permission_level=permission_level, is_read_only=is_read_only)
 
     def register_tool(self, tool: BaseTool):
+        if tool.name in self._tools:
+            import sys
+            print('[WARN] Tool "{}" is being overwritten by a newer registration'.format(tool.name), file=sys.stderr)
         self._tools[tool.name] = ToolDef(name=tool.name, description=tool.description, parameters=tool.parameters, handler=tool.execute, permission_level=tool.permission_level, is_read_only=tool.is_read_only)
 
     def get(self, name: str) -> ToolDef | None:
@@ -42,7 +45,14 @@ class ToolRegistry:
             except TypeError:
                 return tool.handler(**arguments)
         except Exception as e:
-            return ToolResult(success=False, output='', error=str(e))
+            args_preview = json.dumps(arguments, ensure_ascii=False, default=str)
+            if len(args_preview) > 500:
+                args_preview = args_preview[:500] + '...'
+            return ToolResult(
+                success=False,
+                output='',
+                error=f'{type(e).__name__}: {e}\n\n[Called: {name}({args_preview})]',
+            )
 
     def list_tools(self) -> list[str]:
         return list(self._tools.keys())

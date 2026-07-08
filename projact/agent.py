@@ -34,7 +34,13 @@ class TUDOU_Agent:
         self.code_mode = False
         ctx_cfg = settings.get('context', {})
         self.max_iterations = settings.max_iterations
-        self.tracker = TokenTracker(model=settings.model, max_tokens=ctx_cfg.get('max_tokens'), compress_threshold=ctx_cfg.get('compress_threshold', 0.75), urgent_threshold=ctx_cfg.get('compress_urgent_threshold', 0.9), max_tool_result_chars=ctx_cfg.get('max_tool_result_chars', 15000), max_history_turns=ctx_cfg.get('max_history_turns', 50))
+        model_limit = ctx_cfg.get('max_tokens')
+        if not model_limit:
+            try:
+                model_limit = llm_client.get_model_limit(settings.model)
+            except Exception:
+                model_limit = None
+        self.tracker = TokenTracker(model=settings.model, max_tokens=model_limit, compress_threshold=ctx_cfg.get('compress_threshold', 0.75), urgent_threshold=ctx_cfg.get('compress_urgent_threshold', 0.9), max_tool_result_chars=ctx_cfg.get('max_tool_result_chars', 15000), max_history_turns=ctx_cfg.get('max_history_turns', 50))
         summary_model = ctx_cfg.get('summary_model') or settings.model
         self.compressor = ContextCompressor(llm_client=llm_client, summary_model=summary_model)
         self.show_usage = ctx_cfg.get('show_usage_on_turn', False)
@@ -106,7 +112,7 @@ class TUDOU_Agent:
                             self._append_tool_messages(messages, tc, response, result, response.reasoning_content)
                             continue
 
-                    if tool_def and tool_def.is_read_only:
+                    if tool_def and (tool_def.is_read_only or tc.name == 'Agent'):
                         read_only_calls.append(tc)
                     else:
                         write_calls.append(tc)
@@ -121,11 +127,14 @@ class TUDOU_Agent:
                                     on_pre_tool(tc.name, tc.arguments)
                                 if self._hooks:
                                     self._hooks.fire('on_tool_before', name=tc.name, arguments=tc.arguments)
-                                tool_output = (lambda n: lambda line: on_tool_output(line, n) if on_tool_output else None)(tc.name)
+                                tool_output = (lambda n: lambda line, stream='stdout': on_tool_output(line, n, stream) if on_tool_output else None)(tc.name)
                                 futures[executor.submit(self.tools.execute, tc.name, tc.arguments, on_output=tool_output)] = tc
                             for future in as_completed(futures):
                                 tc = futures[future]
-                                result = future.result()
+                                try:
+                                    result = future.result()
+                                except Exception as e:
+                                    result = ToolResult(success=False, output='', error=f'Tool execution error: {e}')
                                 if on_tool_call:
                                     on_tool_call(tc.name, tc.arguments, result)
                                 self._append_tool_messages(messages, tc, response, result, response.reasoning_content)
@@ -135,8 +144,11 @@ class TUDOU_Agent:
                             on_pre_tool(tc.name, tc.arguments)
                         if self._hooks:
                             self._hooks.fire('on_tool_before', name=tc.name, arguments=tc.arguments)
-                        tool_output = (lambda n: lambda line: on_tool_output(line, n) if on_tool_output else None)(tc.name)
-                        result = self.tools.execute(tc.name, tc.arguments, on_output=tool_output)
+                        tool_output = (lambda n: lambda line, stream='stdout': on_tool_output(line, n, stream) if on_tool_output else None)(tc.name)
+                        try:
+                            result = self.tools.execute(tc.name, tc.arguments, on_output=tool_output)
+                        except Exception as e:
+                            result = ToolResult(success=False, output='', error=f'Tool execution error: {e}')
                         if on_tool_call:
                             on_tool_call(tc.name, tc.arguments, result)
                         self._append_tool_messages(messages, tc, response, result, response.reasoning_content)
@@ -152,8 +164,11 @@ class TUDOU_Agent:
                                 on_tool_call(tc.name, tc.arguments, result)
                             self._append_tool_messages(messages, tc, response, result, response.reasoning_content)
                             continue
-                    tool_output = (lambda n: lambda line: on_tool_output(line, n) if on_tool_output else None)(tc.name)
-                    result = self.tools.execute(tc.name, tc.arguments, on_output=tool_output)
+                    tool_output = (lambda n: lambda line, stream='stdout': on_tool_output(line, n, stream) if on_tool_output else None)(tc.name)
+                    try:
+                        result = self.tools.execute(tc.name, tc.arguments, on_output=tool_output)
+                    except Exception as e:
+                        result = ToolResult(success=False, output='', error=f'Tool execution error: {e}')
                     if on_tool_call:
                         on_tool_call(tc.name, tc.arguments, result)
                     self._append_tool_messages(messages, tc, response, result, response.reasoning_content)
@@ -248,4 +263,19 @@ class TUDOU_Agent:
         if reasoning_content:
             assistant_msg['reasoning_content'] = reasoning_content
         messages.append(assistant_msg)
-        messages.append({'role': 'tool', 'tool_call_id': tc.id, 'content': truncated})
+
+        # Build tool response — support image content blocks
+        tool_content: str | list[dict] = truncated
+        if result.images:
+            content_blocks = [{'type': 'text', 'text': truncated}]
+            for img in result.images:
+                content_blocks.append({
+                    'type': 'image',
+                    'source': {
+                        'type': 'base64',
+                        'media_type': img['media_type'],
+                        'data': img['base64'],
+                    }
+                })
+            tool_content = content_blocks
+        messages.append({'role': 'tool', 'tool_call_id': tc.id, 'content': tool_content})

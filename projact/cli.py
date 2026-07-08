@@ -22,12 +22,17 @@ from tools.web_search import WebSearchTool
 from tools.web_fetch import WebFetchTool
 from tools.browser_fetch import BrowserFetchTool
 from tools.ccr_retrieve import RetrieveTool
+from tools.context_recall import ContextRecallTool
+from tools.prompt_select import SelectPromptTool
+from tools.prompt_evolve import WritePromptTool, ReflectTool
 from tools.ask_user import AskUserQuestionTool
 from tools.agent_delegate import AgentTool
 from tools.software_cli import SoftwareCLITool
 from tools.task_manager import TaskManager, TaskCreateTool, TaskUpdateTool, TaskListTool
 from tools.worktree import WorkdirRef, WorktreeManager, EnterWorktreeTool, ExitWorktreeTool
 from tools.sandbox import SandboxConfig, EnableSandboxTool
+from tools.skill_invoke import SkillTool, SkillListTool, SkillSearchTool, SkillRegisterTool
+from tools.explore import ExploreTool
 from context.manager import ContextManager
 from context.ccr import CCRStore
 from hooks.manager import HookManager
@@ -40,10 +45,10 @@ from permissions.enforcer import PermissionEnforcer
 from permissions.modes import PermissionMode
 from permissions.rules import load_rules, save_rules
 from mcp import MCPManager
-from ui.renderer import Renderer
+from ui.renderer import Renderer, HeadlessRenderer
 from ui.spinner import TUDOU_spinner
-from ui.input_handler import InputHandler
 from ui.effects import typewriter2
+from utils.constants import VERSION
 from ui.config_editor import ConfigEditor, save_config
 from remote_feishu import FeishuRelay
 PROJACT_DIR = get_projact_dir()
@@ -80,6 +85,8 @@ def _find_upward(name: str, max_depth: int=5) -> Path | None:
         root = root.parent
     return None
 BUILTIN_SKILLS_DIR = PROJACT_DIR / 'builtin_skills'
+TU_SKILLS_DIR = PROJACT_DIR / 'TU_skills'
+TU_PROMPT_DIR = PROJACT_DIR / 'TU_Prompt'
 SPLASH_TEXT_FILE = _find_upward('TUDOU_effect.txt') or Path('TUDOU_effect.txt')
 DANGERSKILLS_DIR = _find_upward('dangerskills') or PROJACT_DIR.parent / 'dangerskills'
 MEMORY_DIR = _find_upward('memory') or PROJACT_DIR / 'memory'
@@ -90,7 +97,7 @@ class TUDOU_CLI:
         self.settings = Settings(cli_args)
         paths = get_config_paths()
         ctx_cfg = self.settings.get('context', {})
-        self.context = ContextManager(max_history_turns=ctx_cfg.get('max_history_turns', 50), max_tool_result_chars=ctx_cfg.get('max_tool_result_chars', 15000), memory_dir=MEMORY_DIR)
+        self.context = ContextManager(max_history_turns=ctx_cfg.get('max_history_turns', 50), max_tool_result_chars=ctx_cfg.get('max_tool_result_chars', 15000), memory_dir=MEMORY_DIR, tu_skills_dir=TU_SKILLS_DIR, prompt_dir=TU_PROMPT_DIR)
         self._workdir_ref = WorkdirRef(self.context.working_dir)
         wt_cfg = self.settings.get('worktree', {})
         wt_enabled = wt_cfg.get('enabled', True)
@@ -112,7 +119,11 @@ class TUDOU_CLI:
         self.permission_enforcer = PermissionEnforcer()
         self._permissions_file = paths['user_permissions_file']
         self._load_permission_rules()
-        self.renderer = Renderer()
+        self._headless = (cli_args or {}).get('headless', False)
+        if self._headless:
+            self.renderer = HeadlessRenderer()
+        else:
+            self.renderer = Renderer()
         self._plans_dir = PROJACT_DIR / 'plans'
         self._plan_state: dict = {'active': False, 'plan_file': None}
         self._live_tools_file = paths['user_config_dir'] / 'live_tools.json'
@@ -127,16 +138,42 @@ class TUDOU_CLI:
         self.hooks = HookManager(str(hooks_dir), cwd=str(self.context.working_dir))
         self.llm = LLMClient(self.settings)
         self.tools = ToolRegistry()
+        self.skills = SkillRegistry()
+        self.skills.set_cache_path(paths['user_config_dir'] / 'skill_index.json')
+        self.skills.add_search_path(str(BUILTIN_SKILLS_DIR))
+        TU_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+        self.skills.add_search_path(str(TU_SKILLS_DIR))
+        TU_PROMPT_DIR.mkdir(parents=True, exist_ok=True)
+        discovered = self.skills.discover()
+        if discovered > 0:
+            self.renderer.render_text(f'[dim]Loaded {discovered} skills from builtin_skills/ and TU_skills/[/dim]')
         self._register_tools()
         self._load_live_tools()
         self.agent = TUDOU_Agent(settings=self.settings, llm_client=self.llm, tool_registry=self.tools, context_manager=self.context, plan_state=self._plan_state, ccr_store=self.ccr, hook_manager=self.hooks)
+        self.tools.register_tool(ContextRecallTool(compressor=self.agent.compressor))
+        self.tools.register_tool(SelectPromptTool(prompt_dir=TU_PROMPT_DIR, context_manager=self.context))
         remote_cfg = self.settings.get('remote', {})
         feishu_cfg = remote_cfg.get('feishu', {})
         self.remote = FeishuRelay(agent=self.agent, app_id=feishu_cfg.get('app_id', ''), app_secret=feishu_cfg.get('app_secret', ''), base_url=feishu_cfg.get('base_url', 'https://open.feishu.cn/open-apis'))
         self._code_mode = False
         self._shell_active = False
         self._shell_cwd = str(Path.cwd())
-        self.input_handler = InputHandler(history_file=paths.get('user_history_file'), get_plan_state=lambda: self._plan_state.get('active', False), get_code_mode=lambda: self._code_mode, get_shell_mode=lambda: self._shell_active)
+
+        def _mcp_status_text():
+            if not hasattr(self, 'mcp_manager'):
+                return '0 unfound'
+            total = self.mcp_manager.server_count
+            connected = self.mcp_manager.connected_count
+            unfound = total - connected
+            if total > 0 and unfound == 0:
+                return 'connected'
+            return f'{unfound} unfound'
+
+        if not self._headless:
+            from ui.input_handler import InputHandler
+            self.input_handler = InputHandler(history_file=paths.get('user_history_file'), get_plan_state=lambda: self._plan_state.get('active', False), get_code_mode=lambda: self._code_mode, get_shell_mode=lambda: self._shell_active, get_mcp_status=lambda: _mcp_status_text(), get_llm_status=lambda: bool(getattr(self.settings, 'model', None)))
+        else:
+            self.input_handler = None
         self._running = False
         self._root_mode = False
         self._auto_approve = False
@@ -144,23 +181,31 @@ class TUDOU_CLI:
         self._subagent_mode = False
         self._title_generated = False
         self._conv_created = False
+        self._update_title()
         self._last_panel_lines = 0
         self._panel_visible = False
         self._panel_rendered = False
         self._panel_running = False
         self._panel_thread = None
         self._panel_lock = threading.Lock()
-        self.skills = SkillRegistry()
-        self.skills.add_search_path(str(BUILTIN_SKILLS_DIR))
-        discovered = self.skills.discover()
-        if discovered > 0:
-            self.renderer.render_text(f'[dim]Loaded {discovered} skills from builtin_skills/[/dim]')
+        self._panel_stats: dict[str, float] = {'tokens': 0, 'think_s': 0}
+        self._turn_start = 0.0
         mcp_cfg = self.settings.get('mcp', {})
         self.mcp_manager = MCPManager(mcp_cfg.get('servers', []))
         mcp_connected = self.mcp_manager.discover(self.tools)
         if mcp_connected > 0:
             self.renderer.render_text(f'[dim]MCP: {mcp_connected} server(s), {self.tools.tool_count()} total tools[/dim]')
         DANGERSKILLS_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _update_title(self):
+        """Set terminal title to model + session info."""
+        model = self.settings.model or '?'
+        conv_short = self._conv_id[:8] if self._conv_id else 'new'
+        try:
+            sys.stdout.write(f'\033]0;TUDOU | {model} | {conv_short}\007')
+            sys.stdout.flush()
+        except Exception:
+            pass
 
     def _load_permission_rules(self):
         for rule in load_rules(self._permissions_file):
@@ -221,6 +266,8 @@ class TUDOU_CLI:
         self.tools.register_tool(WebFetchTool(llm_client=self.llm, extraction_model=wf_cfg.get('extraction_model'), extraction_api_key=wf_cfg.get('extraction_api_key'), extraction_base_url=wf_cfg.get('extraction_base_url')))
         self.tools.register_tool(BrowserFetchTool())
         self.tools.register_tool(RetrieveTool(ccr_store=self.ccr))
+        self.tools.register_tool(WritePromptTool(prompt_dir=TU_PROMPT_DIR))
+        self.tools.register_tool(ReflectTool(memory_dir=MEMORY_DIR))
         self.tools.register_tool(AskUserQuestionTool())
         self._agent_tool = AgentTool(llm_client=self.llm, tool_registry=self.tools, settings=self.settings)
         self.tools.register_tool(EnterPlanModeTool(self._plan_state, self._plans_dir))
@@ -232,6 +279,11 @@ class TUDOU_CLI:
             self.tools.register_tool(EnterWorktreeTool(self._worktree_manager, on_switch_workdir=self._switch_workdir))
             self.tools.register_tool(ExitWorktreeTool(self._worktree_manager, on_switch_workdir=self._switch_workdir))
         self.tools.register_tool(EnableSandboxTool(self.sandbox_config))
+        self.tools.register_tool(SkillTool(self.skills))
+        self.tools.register_tool(SkillListTool(self.skills))
+        self.tools.register_tool(SkillSearchTool(self.skills))
+        self.tools.register_tool(SkillRegisterTool(self.skills))
+        self.tools.register_tool(ExploreTool(llm_client=self.llm, tool_registry=self.tools, settings=self.settings))
 
     def run(self):
         self._show_splash()
@@ -260,6 +312,9 @@ class TUDOU_CLI:
                     continue
                 self._panel_rendered = False
                 self._auto_approve = False
+                # Clear prompt_toolkit display residual (4 lines: sep+input+sep+hint)
+                sys.stdout.write('\x1b[4A\x1b[0J')
+                sys.stdout.flush()
                 self._process_input(user_input)
             except KeyboardInterrupt:
                 self.renderer.render_text('\n[dim]Interrupted. Type /help for available commands.[/dim]')
@@ -292,7 +347,7 @@ class TUDOU_CLI:
                 self.renderer.render_error(f'cd: no such directory: {target}')
             return
         try:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60, cwd=self._shell_cwd)
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60, cwd=self._shell_cwd)
             if result.stdout:
                 self.renderer.render_text(result.stdout.rstrip())
             if result.stderr:
@@ -334,6 +389,7 @@ class TUDOU_CLI:
                 self.settings.save_projact_config('model', new_model)
                 self.llm._default_model = new_model
                 self.agent.tracker.model = new_model
+                self._update_title()
                 self.renderer.render_text(f'[green]Model set to:[/green] [cyan]{new_model}[/cyan]')
             else:
                 self.renderer.render_text(f'Current model: [cyan]{self.settings.model}[/cyan]')
@@ -463,11 +519,11 @@ class TUDOU_CLI:
             status = '[bold green]ON[/bold green]' if self._root_mode else '[dim]OFF[/dim]'
             self.renderer.render_text(f'Root mode: {status}  — Agent will {"" if self._root_mode else "NOT "}auto-execute without asking.')
             return True
-        if cmd == '/betterui':
+        if cmd == '/quiet':
             self._quiet_ui = not self._quiet_ui
             status = '[bold green]ON[/bold green]' if self._quiet_ui else '[dim]OFF[/dim]'
-            self.renderer.render_text(f'Better UI: {status}  — Noise reduction {"enabled" if self._quiet_ui else "disabled"}.')
-            return
+            self.renderer.render_text(f'Quiet mode: {status}  — Noise reduction {"enabled" if self._quiet_ui else "disabled"}.')
+            return True
 
         if cmd == '/thinking':
             thinking_cfg = self.settings.get('thinking', {})
@@ -570,6 +626,7 @@ class TUDOU_CLI:
         skill = SkillLoader.load_from_dir(dst)
         if skill:
             self.skills.register(skill)
+            self.skills._save_to_cache()
             return f'Imported and registered: {skill.name} — {skill.description}'
         return f"Imported '{folder_name}' to builtin_skills/ (SKILL.md parsing failed)"
 
@@ -577,14 +634,15 @@ class TUDOU_CLI:
         src = BUILTIN_SKILLS_DIR / folder_name
         if not src.exists():
             return f"Error: '{folder_name}' not found in builtin_skills/"
-        if self.skills.active_skill and self.skills.active_skill.name == folder_name:
+        # Deactivate if any active skill lives at this path
+        active = self.skills.active_skill
+        if active and active.path and active.path.resolve() == src.resolve():
             self.skills.deactivate()
         dst = DANGERSKILLS_DIR / folder_name
         if dst.exists():
             shutil.rmtree(str(dst))
         shutil.move(str(src), str(dst))
-        self.skills = SkillRegistry()
-        self.skills.add_search_path(str(BUILTIN_SKILLS_DIR))
+        self.skills.invalidate_cache()
         self.skills.discover()
         return f"Moved '{folder_name}' from builtin_skills/ to dangerskills/"
 
@@ -636,7 +694,7 @@ class TUDOU_CLI:
         try:
             proc = subprocess.run(
                 [git_exe, 'clone', '--depth', '1', clone_url, str(tmpdir)],
-                capture_output=True, text=True, timeout=60,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=120,
             )
             if proc.returncode != 0:
                 err = proc.stderr.strip().split('\n')[-1] if proc.stderr else 'Unknown error'
@@ -645,13 +703,14 @@ class TUDOU_CLI:
                 return True
         except subprocess.TimeoutExpired:
             shutil.rmtree(str(tmpdir), ignore_errors=True)
-            self.renderer.render_error('Clone timed out (60s).')
+            self.renderer.render_error('Clone timed out (120s).')
             return True
 
         # Find all SKILL.md files in cloned repo
         skill_files = list(tmpdir.rglob('SKILL.md'))
-        # Exclude .archive and .hub
-        skill_files = [f for f in skill_files if '.archive' not in str(f) and '.hub' not in str(f)]
+        # Exclude .archive and .hub (by path component, not substring)
+        skill_files = [f for f in skill_files
+                       if '.archive' not in f.parts and '.hub' not in f.parts]
 
         if not skill_files:
             shutil.rmtree(str(tmpdir), ignore_errors=True)
@@ -676,6 +735,15 @@ class TUDOU_CLI:
             src_dir = sf.parent
             try:
                 shutil.copytree(str(src_dir), str(dst_dir))
+                # Update skill path + re-discover resources at new location
+                skill.path = dst_dir
+                skill._resources_discovered = False
+                skill.references.clear()
+                skill.scripts.clear()
+                skill.assets.clear()
+                skill.examples.clear()
+                skill.templates.clear()
+                skill._ensure_resources()
                 self.skills.register(skill)
                 installed.append(skill.name)
             except OSError as e:
@@ -685,6 +753,7 @@ class TUDOU_CLI:
         shutil.rmtree(str(tmpdir), ignore_errors=True)
 
         if installed:
+            self.skills._save_to_cache()
             skill_list = ', '.join(installed)
             self.renderer.render_text(f'[green]Installed {len(installed)} skill(s):[/green] {skill_list}')
         if skipped:
@@ -700,7 +769,7 @@ class TUDOU_CLI:
             return True
         keyword = parts[2].lower()
         matches = []
-        for s in self.skills._skills.values():
+        for _, s in self.skills.items():
             if keyword in s.name.lower() or keyword in s.description.lower():
                 matches.append(s)
             elif s.tags and any(keyword in t.lower() for t in s.tags):
@@ -850,6 +919,7 @@ class TUDOU_CLI:
                 old_conv_id = self._conv_id
                 self._conv_id = cp_conv_id
                 self._conv_created = True
+                self._update_title()
                 self.task_manager.switch_conversation(self._conv_id)
                 self.renderer.render_text(f'[green]Auto-resumed session[/green] [cyan]{cp_conv_id}[/cyan] — recovered from checkpoint (iteration {cp_iter}, {len(source_msgs)} messages) (was {old_conv_id})')
                 return True
@@ -911,6 +981,7 @@ class TUDOU_CLI:
             self._conv_id = new_id
             self._conv_created = True
             self._title_generated = True
+            self._update_title()
             self.task_manager.switch_conversation(self._conv_id)
             self.renderer.render_text(f'[green]Imported {len(matches)} messages as new session:[/green] [cyan]{new_id}[/cyan]')
             return True
@@ -925,6 +996,7 @@ class TUDOU_CLI:
             self._conv_id = uuid.uuid4().hex[:12]
             self._title_generated = False
             self._conv_created = True
+            self._update_title()
             self.task_manager.switch_conversation(self._conv_id)
             self.session_store.create_conversation(self._conv_id, model=self.settings.model)
             self.renderer.render_text(f'[green]Cleared {count} conversation(s). New session: [cyan]{self._conv_id}[/cyan][/green]')
@@ -987,6 +1059,7 @@ class TUDOU_CLI:
         old_conv_id = self._conv_id
         self._conv_id = conv_id
         self._conv_created = True
+        self._update_title()
         self.task_manager.switch_conversation(self._conv_id)
         import datetime
         sessions = {s['id']: s for s in self.session_store.get_conversations()}
@@ -1047,16 +1120,17 @@ class TUDOU_CLI:
         return True
 
     def _handle_mcp(self):
-        count = self.mcp_manager.server_count
-        if count == 0:
+        total = self.mcp_manager.server_count
+        if total == 0:
             self.renderer.render_text('[dim]No MCP servers configured. Add servers under `mcp.servers` in config.yaml[/dim]')
             return
-        self.renderer.render_text('[bold]MCP Servers ({} connected):[/bold]'.format(count))
+        self.renderer.render_text('[bold]MCP Servers ({} of {} connected):[/bold]'.format(
+            self.mcp_manager.connected_count, total))
         mcp_cfg = self.settings.get('mcp', {})
         for srv in mcp_cfg.get('servers', []):
             name = srv.get('name', '?')
             cmd = srv.get('command', '?')
-            connected = '[green]connected[/green]' if name in self.mcp_manager._clients else '[red]failed[/red]'
+            connected = '[green]connected[/green]' if self.mcp_manager.is_connected(name) else '[red]failed[/red]'
             self.renderer.render_text('  [cyan]{}[/cyan] — {} — {}'.format(name, cmd, connected))
         self.renderer.render_text('\n[dim]MCP tools are prefixed with `mcp__<server>__` . Use /tools to list all tools.[/dim]')
 
@@ -1214,7 +1288,7 @@ class TUDOU_CLI:
         help_text = ''
         for flag in ['--help', '-h', 'help', '--version']:
             try:
-                proc = subprocess.run([exe, flag], capture_output=True, text=True, timeout=10, env={**os.environ, 'PAGER': 'cat'})
+                proc = subprocess.run([exe, flag], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10, env={**os.environ, 'PAGER': 'cat'})
                 if proc.returncode == 0 and proc.stdout.strip():
                     help_text = proc.stdout
                     break
@@ -1328,20 +1402,61 @@ class TUDOU_CLI:
         self.renderer.render_text(f'Remote Control Status (Feishu Bot):\n  Running:    [green]yes[/green]\n  WebSocket:  {ws}\n  Bound:      {bound}\n  Pairing:    {pairing}\n')
 
     def _process_input(self, user_input: str):
+        # Echo user input with background highlight
+        ESC = chr(27)
+        sys.stdout.write(f'{ESC}[48;2;40;40;70m{ESC}[1m❯ {user_input}{ESC}[0m{ESC}[48;2;40;40;70m{ESC}[K{ESC}[0m\n')
+        sys.stdout.flush()
         spinner = TUDOU_spinner('The agent is thinking for your questions...', style='dots')
 
+        _merge_buf: list[tuple] = []  # (name, args, result) from on_tool_call
+        _pre_buf: list[tuple] = []    # (name, args) from on_pre_tool, for early display
+        _pre_timer = [None]  # list wrapper avoids nonlocal issues
+
+        # ── ghost footer (drawn below spinner on each thinking cycle) ──
+        import shutil as _shutil
+
+        def _draw_ghost(status_text: str = "thinking..."):
+            """Draw ghost box below current cursor *on clean lines*, then move back.
+            Caller must ensure no concurrent stdout writes (e.g. spinner stopped)."""
+            cols = _shutil.get_terminal_size().columns
+            sep = '─' * cols
+            hint = '  /help  /exit  /clear  /quiet  /tools  /model  /skills  /remote  /tudou'
+            sys.stdout.write(f'\n{ESC}[0J')                    # down + clear old content below
+            sys.stdout.write(f'{ESC}[2m{sep}{ESC}[0m\n')
+            sys.stdout.write(f'{ESC}[2m❯ {status_text}{ESC}[0m{ESC}[K\n')
+            sys.stdout.write(f'{ESC}[2m{sep}{ESC}[0m\n')
+            sys.stdout.write(f'{ESC}[2m{hint}{ESC}[0m')
+            sys.stdout.write(f'{ESC}[4A')  # back above ghost: 1(blank) + sep + status + sep = 4 lines
+            sys.stdout.flush()
+
+        def _clear_ghost():
+            """Clear everything below current cursor (ghost + any old output)."""
+            ESC = chr(27)
+            sys.stdout.write(f'{ESC}[s')          # save cursor
+            sys.stdout.write(f'\n{ESC}[0J')       # down one line, clear to end of screen
+            sys.stdout.write(f'{ESC}[u')          # restore cursor
+            sys.stdout.flush()
+
         def _maybe_show_thinking():
+            sys.stdout.write('\n')
+            sys.stdout.flush()
             self._start_panel_animation()
             if not self._panel_running:
+                spinner.stop()
+                _draw_ghost('thinking...')
                 spinner.start()
 
         _maybe_show_thinking()
+        # ────────────────────────────────────────────────────────────────
+
         write_old_content: str | None = None
         stream_started = [False]
-        TOOL_HINTS = {'Read': 'The agent is reading a file for you...', 'Write': 'The agent is writing a file for you...', 'Edit': 'The agent is editing a file for you...', 'Bash': 'The agent is running a command for you...', 'Glob': 'The agent is searching for files for you...', 'Grep': 'The agent is searching code for you...', 'WebSearch': 'The agent is searching the web for you...', 'WebFetch': 'The agent is fetching a URL for you...'}
+        TOOL_HINTS = {'Read': 'The agent is reading files...', 'Write': 'The agent is writing a file for you...', 'Edit': 'The agent is editing a file for you...', 'Bash': 'The agent is running a command for you...', 'Glob': 'The agent is searching files...', 'Grep': 'The agent is searching code...', 'WebSearch': 'The agent is searching the web...', 'WebFetch': 'The agent is fetching URLs...', 'Agent': 'The agent is delegating a task to a sub-agent...'}
 
         streamed_text = ['']
         supplements_queue: list[str] = []
+        _READONLY_TOOLS = {'Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'}
+        _NO_CONTENT_TOOLS = {'Read'}  # Never show output content
 
         def get_supplements() -> list[str]:
             if supplements_queue:
@@ -1351,53 +1466,164 @@ class TUDOU_CLI:
             return []
 
         def on_stream_token(token: str):
+            if _pre_timer[0]:
+                _pre_timer[0].cancel()
+            _flush_merge()
             if not stream_started[0]:
                 spinner.stop()
                 self._stop_panel_animation()
                 stream_started[0] = True
+                streamed_text[0] = ''  # reset — old text from previous response
+                spinner.set_status('Generating response...')
+                _clear_ghost()
                 self.renderer.start_live_markdown()
             streamed_text[0] += token
             self.renderer.update_live_markdown(streamed_text[0])
 
-        def on_tool_output(line: str, tool_name: str=''):
-            label = f'[dim]{tool_name}[/dim] │ ' if tool_name else ''
-            self.renderer.render_text(f'  [dim]│[/dim] {label}{line}')
+        def on_tool_output(line: str, tool_name: str='', stream: str='stdout'):
+            if tool_name in _NO_CONTENT_TOOLS:
+                return
+            if tool_name in ('Glob', 'Grep'):  # never stream — only show final result
+                return
+            if self._quiet_ui and tool_name in _READONLY_TOOLS:
+                return
+            if stream in ('explore-pre', 'explore-counter'):
+                self.renderer.render_tool_output_line('', line, stream)
+            else:
+                self.renderer.render_tool_output_line(tool_name, line, stream)
+
+        _TOOL_STATUS = {'Read': 'Reading files...', 'Write': 'Writing file...',
+                        'Edit': 'Editing file...', 'Bash': 'Running command...',
+                        'Glob': 'Searching files...', 'Grep': 'Searching code...',
+                        'WebSearch': 'Searching web...', 'WebFetch': 'Fetching URL...',
+                        'Agent': 'Delegating task...'}
 
         def on_pre_tool(name, arguments):
+            self._turn_start = time.time()
             if stream_started[0]:
                 self.renderer.stop_live_markdown()
             stream_started[0] = False
             spinner.stop()
             self._stop_panel_animation()
-            if not self._quiet_ui:
+            if name == 'Explore':
+                desc = arguments.get('description', 'Exploring codebase')
+                _clear_ghost()                        # remove old thinking ghost
+                self.renderer.render_explore_start(desc)
+                spinner.set_status('Exploring codebase...')
+            elif name in _MERGE_LABELS:
+                # Buffer pre-execution info, show merged display on timer (during execution)
+                _pre_buf.append((name, arguments))
+                if _pre_timer[0]:
+                    _pre_timer[0].cancel()
+                _pre_timer[0] = threading.Timer(0.05, _show_pre_merge)
+                _pre_timer[0].start()
+                _sts = _TOOL_STATUS.get(name, f'Running {name}...')
+                spinner.set_status(_sts)
+                _merge_sts[0] = _sts
+            else:
                 hint = TOOL_HINTS.get(name, f'Running {name}...')
                 self.renderer.render_pre_tool(hint, name, arguments)
+                sys.stdout.write('\n')
+                sys.stdout.flush()
+                _sts = _TOOL_STATUS.get(name, f'Running {name}...')
+                spinner.set_status(_sts)
+                _draw_ghost(_sts)
+                spinner.start()
+
+        _MERGE_LABELS = {'Read': 'files', 'Glob': 'patterns', 'Grep': 'patterns',
+                         'WebSearch': 'queries', 'WebFetch': 'URLs'}
+
+        _merge_sts = ['']  # track status text for _show_pre_merge ghost
+
+        def _show_pre_merge():
+            """Show merged display from pre_tool buffer (during tool execution)."""
+            if not _pre_buf:
+                return
+            _clear_ghost()
+            items = list(_pre_buf)
+            _pre_buf.clear()
+            name = items[0][0]
+            count = len(items)
+            label = _MERGE_LABELS.get(name, 'items')
+            ESC = chr(27)
+            import shutil as _shutil
+            cols = _shutil.get_terminal_size().columns
+            sep = ('─' * (cols // 2))[:cols]
+            sys.stdout.write(f'{ESC}[2m{sep}{ESC}[0m{ESC}[K\n')
+            hint = TOOL_HINTS.get(name, f'{name} × {count} {label}')
+            sys.stdout.write(f'  {ESC}[2m→ {hint}{ESC}[0m{ESC}[K\n')
+            sys.stdout.write(f'  {ESC}[5m●{ESC}[25m {ESC}[38;2;135;206;250m{name} × {count} {label}{ESC}[0m{ESC}[K\n')
+            for _, args in items[:3]:
+                d = args.get('file_path', '') or args.get('pattern', '') or args.get('query', '') or args.get('url', '') or str(args)
+                sys.stdout.write(f'     ⎿  {ESC}[2m{d}{ESC}[0m{ESC}[K\n')
+            if count > 3:
+                sys.stdout.write(f'     ⎿  {ESC}[2m... {count - 3} more{ESC}[0m{ESC}[K\n')
+            sys.stdout.write('\n')
+            sys.stdout.flush()
+            _draw_ghost(_merge_sts[0] or 'thinking...')
+            spinner.start()
+
+        def _flush_merge():
+            if _pre_timer[0]:
+                _pre_timer[0].cancel()
+            if not _merge_buf:
+                return
+            spinner.stop()
+            _clear_ghost()
+            items = list(_merge_buf)
+            _merge_buf.clear()
+            name = items[0][0]
+            count = len(items)
+            if count == 1:
+                # Single call — render normally
+                _, args, result = items[0]
+                if not self._quiet_ui or name not in _READONLY_TOOLS:
+                    self.renderer.render_tool_call(name, args, result.success)
+                if name in _NO_CONTENT_TOOLS or (name in _READONLY_TOOLS and self._quiet_ui):
+                    saved = result.output
+                    result.output = ''
+                    self.renderer.render_tool_result(name, args, result)
+                    result.output = saved
+                else:
+                    self.renderer.render_tool_result(name, args, result)
 
         def on_tool_call(name, arguments, result):
             nonlocal write_old_content
+            # Merge consecutive same-type read-only tool calls
+            if name in _MERGE_LABELS and name not in {'Write', 'Edit', 'Bash'}:
+                if not _merge_buf or _merge_buf[0][0] == name:
+                    _merge_buf.append((name, arguments, result))
+                    return
+                else:
+                    _flush_merge()
+                    _merge_buf.append((name, arguments, result))
+                    _draw_ghost('thinking...')
+                    return
+            else:
+                _flush_merge()
+            spinner.stop()
+            spinner.set_status(None)
+            _clear_ghost()
             if name == 'AskUserQuestion':
                 import json as _json
                 try:
                     questions = _json.loads(arguments.get('questions', '[]'))
                 except Exception:
                     questions = []
-                self.renderer.render_text('\n[bold yellow]--- Agent Questions ---[/bold yellow]\n')
-                for i, q in enumerate(questions):
-                    header = q.get('header', f'Q{i+1}')
-                    question = q.get('question', '')
-                    options = q.get('options', [])
-                    self.renderer.render_text(f'[bold]{header}[/bold]: {question}')
-                    if options:
-                        for j, opt in enumerate(options):
-                            label = opt.get('label', opt) if isinstance(opt, dict) else str(opt)
-                            desc = opt.get('description', '') if isinstance(opt, dict) else ''
-                            self.renderer.render_text(f'  {j+1}. {label}' + (f' — {desc}' if desc else ''))
-                    self.renderer.render_text('')
-                self.renderer.render_text('[dim]---[/dim]\n')
-                # Collect answers
-                answers = self.input_handler.prompt_user_response(questions)
-                supplements_queue.append(answers)
+                if questions:
+                    result = self.renderer.prompt_form(questions)
+                    if result.get('__cancelled__'):
+                        supplements_queue.append('[User cancelled the question form — treat this as: user does not want to answer these questions. Do NOT ask them again. Proceed with what you know.]')
+                    else:
+                        parts = []
+                        for header, answers in result.items():
+                            if isinstance(answers, list):
+                                parts.append(f'[{header}] User selected: {", ".join(answers)}')
+                            else:
+                                parts.append(f'[{header}] {answers}')
+                        supplements_queue.append('\n'.join(parts))
                 _maybe_show_thinking()
+                spinner.set_status(None)
                 return
             if name in ('Write', 'Edit'):
                 fp = arguments.get('file_path', '')
@@ -1406,7 +1632,21 @@ class TUDOU_CLI:
                     if not self._code_mode:
                         self._code_mode = True
                         self.agent.code_mode = True
-            self.renderer.render_tool_call(name, arguments)
+            if name == 'Explore' and result.success:
+                # Explore: show compact summary instead of ● ToolName(...)
+                meta = result.metadata or {}
+                sub_count = meta.get('sub_tools_used', 0)
+                sub_names = meta.get('sub_tool_names', [])
+                self.renderer.render_explore_summary(sub_count, sub_names)
+                # render_tool_result follows below (common path) with ✓ + output
+            elif name == 'Agent' and result.success:
+                # Agent: show sub-agent stats summary
+                meta = result.metadata or {}
+                agent_tools = meta.get('tools_used', {})
+                agent_dur = meta.get('duration_ms', 0)
+                self.renderer.render_agent_summary(agent_tools, agent_dur)
+            else:
+                self.renderer.render_tool_call(name, arguments, result.success)
             if name == 'Write' and 'content' in arguments:
                 lang = _guess_lang(arguments.get('file_path', ''))
                 new_content = arguments['content']
@@ -1420,7 +1660,13 @@ class TUDOU_CLI:
                 old = arguments.get('old_string', '')
                 new = arguments.get('new_string', '')
                 self.renderer.render_unified_diff(old, new, lang)
-            self.renderer.render_tool_result(name, arguments, result)
+            if name in _NO_CONTENT_TOOLS or name == 'Explore' or (self._quiet_ui and name in _READONLY_TOOLS):
+                saved_output = result.output
+                result.output = ''
+                self.renderer.render_tool_result(name, arguments, result)
+                result.output = saved_output
+            else:
+                self.renderer.render_tool_result(name, arguments, result)
             _maybe_show_thinking()
 
         def on_approval(name, arguments):
@@ -1504,6 +1750,11 @@ class TUDOU_CLI:
         # Clean up checkpoints on successful completion
         if response.final_message:
             self.session_store.delete_checkpoints(self._conv_id)
+        # Update panel stats from response
+        import time as _time
+        tok = response.token_usage
+        self._panel_stats['tokens'] = tok.input + tok.output
+        self._panel_stats['think_s'] = response.duration_ms / 1000.0
         self._save_to_history_md(user_input, response)
         if not self._panel_rendered:
             self._render_task_panel()
@@ -1546,13 +1797,21 @@ class TUDOU_CLI:
             self.renderer.render_text('[dim]No tasks yet. Agent can create tasks with TaskCreate tool during complex work.[/dim]')
             return
         counts = self.task_manager.count()
-        icons = {'pending': '[dim]○[/dim]', 'in_progress': '[bold cyan]●[/bold cyan]', 'completed': '[green]✓[/green]', 'deleted': '[dim]✗[/dim]'}
-        lines = [f'[bold]Tasks ({counts["total"]}):[/bold]  {icons["in_progress"]} {counts["in_progress"]} in-progress  {icons["pending"]} {counts["pending"]} pending  {icons["completed"]} {counts["completed"]} done']
+        icons = {'pending': '◻', 'in_progress': '◼', 'completed': '✔', 'deleted': '✗'}
+        lines = [f'[bold]Tasks ({counts["total"]}):[/bold]  {icons["in_progress"]} {counts["in_progress"]} active  {icons["pending"]} {counts["pending"]} pending  {icons["completed"]} {counts["completed"]} done']
+        completed_ids = {t.id for t in tasks if t.status == 'completed'}
         for t in tasks:
+            if t.status == 'deleted':
+                continue
             icon = icons.get(t.status, '?')
-            lines.append(f'  [{t.id}] {icon} {t.subject}')
-            if t.blocked_by:
-                lines.append(f'      [dim]⏳ blocked by: {", ".join(t.blocked_by)}[/dim]')
+            line = f'  {icon} \x1b[1m{t.subject}\x1b[0m'
+            blockers = [b for b in t.blocked_by if b not in completed_ids]
+            if blockers:
+                line += f' \x1b[2m› blocked by #{", #".join(blockers)}\x1b[0m'
+            if t.status == 'completed' and t.elapsed > 0:
+                dur = f'{t.elapsed:.0f}s' if t.elapsed >= 1 else f'{t.elapsed*1000:.0f}ms'
+                line += f' \x1b[2m({dur})\x1b[0m'
+            lines.append(line)
         self.renderer.render_text('\n'.join(lines))
 
     @staticmethod
@@ -1574,42 +1833,80 @@ class TUDOU_CLI:
         return ''.join(parts)
 
     def _build_panel_lines(self, t: float) -> list[str]:
-        """Build wave-colored panel lines. Returns empty list if no tasks."""
+        """Build tree-structured task panel. No box, clean indentation."""
         tasks = self.task_manager.list_tasks()
-        active = [t for t in tasks if t.status in ('pending', 'in_progress')]
+        active = [tk for tk in tasks if tk.status in ('pending', 'in_progress')]
         if not tasks or not active:
             return []
 
-        icons = {'pending': '○', 'in_progress': '●', 'completed': '✓'}
-        visible = [t for t in tasks if t.status != 'deleted']
-        sgr_map = {'completed': '9', 'pending': '2', 'in_progress': '1'}
+        icons = {'pending': '◻', 'in_progress': '◼', 'completed': '✔'}
+        visible = [tk for tk in tasks if tk.status != 'deleted']
+        visible.sort(key=lambda tk: (
+            {'in_progress': 0, 'pending': 1, 'completed': 2}.get(tk.status, 3),
+            tk.id
+        ))
 
-        # Measure
-        title = f'  ▸ Task progress ({len(active)} active) (Agent is doing something for your question)  '
-        raw_lines = [title]
-        for i, task in enumerate(visible):
-            is_last = (i == len(visible) - 1)
-            prefix = '└─' if is_last else '├─'
-            icon = icons.get(task.status, '?')
-            raw_lines.append(f'  {prefix} [{task.id}] {icon} {task.subject}  ')
-        inner_w = max(len(l) for l in raw_lines)
+        # Build tree: roots are tasks with no uncompleted blockers
+        completed_ids = {tk.id for tk in visible if tk.status == 'completed'}
+        def _is_unblocked(tk):
+            return all(b in completed_ids for b in tk.blocked_by)
 
-        out = [self._wave_chars(f'╭{"─" * inner_w}╮', t)]
-        padded_title = f'│{title}{" " * (inner_w - len(title))}│'
-        out.append(self._wave_chars(padded_title, t))
+        roots = [tk for tk in visible if _is_unblocked(tk)]
+        blocked = [tk for tk in visible if not _is_unblocked(tk)]
 
-        for i, task in enumerate(visible):
-            is_last = (i == len(visible) - 1)
-            prefix = '└─' if is_last else '├─'
-            icon = icons.get(task.status, '?')
-            sgr = sgr_map.get(task.status, '')
-            head = f'│  {prefix} [{task.id}] {icon} '
-            subj = self._wave_chars(task.subject, t, extra_sgr=sgr)
-            tail_len = inner_w - len(f'  {prefix} [{task.id}] {icon} {task.subject}  ')
-            tail = f'{" " * tail_len}│'
-            out.append(self._wave_chars(head, t) + subj + self._wave_chars(tail, t))
+        # Find in-progress task
+        in_progress = next((tk for tk in visible if tk.status == 'in_progress'), None)
 
-        out.append(self._wave_chars(f'╰{"─" * inner_w}╯', t))
+        out = []
+        # Top status line
+        if in_progress:
+            name = in_progress.active_form or in_progress.subject
+            elapsed = in_progress.elapsed
+            timing = f'{elapsed:.0f}s' if elapsed >= 1 else f'{elapsed*1000:.0f}ms'
+            stats = self._panel_stats
+            tok_str = f' · ↓ {stats["tokens"]} tokens' if stats.get('tokens') else ''
+            think_str = f' · thought for {stats["think_s"]:.0f}s' if stats.get('think_s') else ''
+            wavy_name = self._wave_chars(name, t)
+            out.append(f'   \x1b[5m●\x1b[25m {wavy_name}… \x1b[2m({timing}{tok_str}{think_str})\x1b[0m')
+
+        # Build tree for roots
+        def _render_subtree(tk_list, indent, is_last_list):
+            for i, tk in enumerate(tk_list):
+                is_last = (i == len(tk_list) - 1)
+                if indent == 0:
+                    branch = '⎿ ' if tk.status == 'in_progress' else '  '
+                else:
+                    branch = '  '
+                prefix = branch + '  ' * indent
+                icon = icons.get(tk.status, '?')
+                line = f'   {prefix}{icon} \x1b[1m{tk.subject}\x1b[0m'
+
+                # Inline blocked_by
+                blockers = [b for b in tk.blocked_by if b not in completed_ids]
+                if blockers:
+                    line += f' \x1b[2m› blocked by #{", #".join(blockers)}\x1b[0m'
+
+                # Duration for completed tasks
+                if tk.status == 'completed' and tk.elapsed > 0:
+                    dur = f'{tk.elapsed:.0f}s' if tk.elapsed >= 1 else f'{tk.elapsed*1000:.0f}ms'
+                    line += f' \x1b[2m({dur})\x1b[0m'
+
+                out.append(line)
+
+                # Render children (tasks blocked by this task)
+                children = [t for t in blocked if tk.id in t.blocked_by]
+                if children:
+                    _render_subtree(children, indent + 1, False)
+
+        # Render: in_progress first, then other roots
+        if in_progress and in_progress in roots:
+            _render_subtree([in_progress], 0, True)
+            other_roots = [tk for tk in roots if tk != in_progress]
+            if other_roots:
+                _render_subtree(other_roots, 0, True)
+        else:
+            _render_subtree(roots, 0, True)
+
         return out
 
     def _render_task_panel(self):
@@ -1617,7 +1914,7 @@ class TUDOU_CLI:
         lines = self._build_panel_lines(time.time())
         if not lines:
             return
-        sys.stdout.write('\n'.join(lines) + '\n')
+        sys.stdout.write('\n'.join(lines) + '\n\n')
         sys.stdout.flush()
         self._panel_rendered = True
 
@@ -1683,8 +1980,117 @@ class TUDOU_CLI:
         tracker = self.agent.tracker
         messages = self.context._history
         turn_count = len(messages) // 2
-        est_tokens = tracker.estimate_messages(self.context.build_messages(user_input='', tools=self.tools.get_schemas() if self.tools.tool_count() > 0 else None, system_extra=self.skills.get_active_prompt()))
-        self.renderer.render_text(f'Context Status:\n  Model: {tracker.model}  |  Budget: {tracker.budget.max_tokens:,} tokens\n  Estimated: {est_tokens:,} tokens ({tracker.usage_ratio() * 100:.1f}%)  |  Remaining: {tracker.remaining():,}\n  Messages in history: {len(messages)}  |  Turns: {turn_count}\n  Cumulative input: {tracker.cumulative_input:,}  |  Cumulative output: {tracker.cumulative_output:,}\n  Compressions: {tracker.compression_count}\n  Tool result max chars: {tracker.max_tool_result_chars:,}')
+        # Use LLM client's model limit detection (API + hardcoded)
+        model_limit = self.llm.get_model_limit(tracker.model)
+        budget = model_limit if model_limit > 0 else tracker.budget.max_tokens
+        config_limit = self.settings.get('context', {}).get('max_tokens')
+        has_override = config_limit and config_limit != model_limit
+
+        # Estimate category breakdown
+        sys_msg = self.context.build_messages(user_input='', tools=None, system_extra='')
+        sys_only = self.context.build_system_prompt()
+        sys_est = len(sys_only) // 4
+        tools_schemas = self.tools.get_schemas() if self.tools.tool_count() > 0 else None
+        tools_json = __import__('json').dumps(tools_schemas or [])
+        tools_est = len(tools_json) // 4
+        mem_est = len(self.context._memory_content) // 4 if self.context._memory_content else 0
+        skill_body = self.skills.get_active_prompt()
+        skill_est = len(skill_body) // 4 if skill_body else 0
+        messages_with_tools = self.context.build_messages(user_input='', tools=tools_schemas, system_extra=skill_body)
+        total_est = tracker.estimate_messages(messages_with_tools)
+        msg_est = max(0, total_est - sys_est - tools_est - mem_est - skill_est)
+        free_est = max(0, budget - total_est)
+        buffer_est = int(budget * 0.033)
+
+        # Build 20-block bar. Small categories are merged into system.
+        sys_combined = sys_est + tools_est + mem_est + skill_est
+        # Distribute 20 blocks: each non-zero category gets at least 1, then proportional
+        parts = []
+        for n, ch, col in [(sys_combined, '⛁', '38;5;246'), (msg_est, '⛁', '38;5;135'), (buffer_est, '⛝', '38;5;246')]:
+            if n > 0:
+                b = max(1, round(n / budget * 20))
+                parts.append((b, ch, col))
+        # Ensure total <= 20 by trimming largest
+        while sum(p[0] for p in parts) > 20:
+            parts.sort(key=lambda x: x[0], reverse=True)
+            parts[0] = (parts[0][0] - 1, parts[0][1], parts[0][2])
+        free_blocks = 20 - sum(p[0] for p in parts)
+        bar = ''.join(f'\033[{col}m{ch * n}\033[0m' for n, ch, col in parts)
+        if free_blocks > 0:
+            bar += f'\033[38;5;246m{"⛶" * free_blocks}\033[0m'
+
+        # Format numbers
+        def _fmt(n):
+            if n >= 1_000_000: return f'{n/1_000_000:.1f}m'
+            if n >= 1000: return f'{n/1000:.1f}k'
+            return str(n)
+
+        pct_used = total_est / budget * 100 if budget else 0
+
+        lines = []
+        lines.append('⎿  \033[1mContext Usage\033[0m')
+        lines.append(f'     {bar}   \033[38;5;246m{tracker.model}  ·  model context: {_fmt(budget)} tokens\033[0m')
+        if has_override:
+            lines.append(f'     {bar}   \033[38;5;220m[!] Config override: {_fmt(config_limit)} (API reports {_fmt(model_limit)})\033[0m')
+        lines.append(f'     {bar}   \033[38;5;246mEstimated: {_fmt(total_est)} tokens used ({pct_used:.0f}%)\033[0m')
+        if tracker.cumulative_cache_read > 0:
+            total_sent = tracker.cumulative_input + tracker.cumulative_cache_read
+            hit_pct = tracker.cumulative_cache_read / total_sent * 100 if total_sent > 0 else 0
+            lines.append(f'     {bar}   \033[38;5;40mCache: {_fmt(tracker.cumulative_cache_read)} tokens hit ({hit_pct:.0f}%), {_fmt(tracker.cumulative_cache_write)} written\033[0m')
+
+        # Category legend
+        lines.append(f'     \033[38;5;246m⛶ {"⛶" * 19}\033[0m   \033[38;5;246m\033[3mEstimated usage by category\033[0m\033[0m')
+        cat_items = [
+            ('38;5;246', '⛁', f'System prompt: {_fmt(sys_est)} tokens ({sys_est/budget*100:.1f}%)'),
+            ('38;5;246', '⛁', f'System tools: {_fmt(tools_est)} tokens ({tools_est/budget*100:.1f}%)'),
+            ('38;5;174', '⛁', f'Memory files: {_fmt(mem_est)} tokens ({mem_est/budget*100:.1f}%)'),
+            ('38;5;220', '⛁', f'Skills: {_fmt(skill_est)} tokens ({skill_est/budget*100:.1f}%)'),
+            ('38;5;135', '⛁', f'Messages: {_fmt(msg_est)} tokens ({msg_est/budget*100:.1f}%)'),
+            ('38;5;246', '⛶', f'Free space: {_fmt(free_est)} ({free_est/budget*100:.1f}%)'),
+        ]
+        for color, ch, label in cat_items:
+            lines.append(f'     \033[{color}m{ch}\033[0m {label}')
+        lines.append(f'                                               \033[38;5;246m⛝ Autocompact buffer: {_fmt(buffer_est)} tokens (3.3%)\033[0m')
+
+        # Memory files section
+        lines.append('')
+        lines.append(f'     \033[1mMemory files\033[0m\033[38;5;246m · /memory\033[0m')
+        mem_files = self.memory_manager.list_files()[:5] if hasattr(self, 'memory_manager') else []
+        if mem_files:
+            for i, f in enumerate(mem_files):
+                prefix = '├' if i < len(mem_files) - 1 else '└'
+                mem = self.memory_manager.load(f.name)
+                label = mem['name'] if mem else f.name
+                size = f.stat().st_size if f.exists() else 0
+                lines.append(f'     \033[38;5;246m{prefix}\033[0m {f.name}: \033[38;5;246m{size} bytes\033[0m — {label}')
+        else:
+            lines.append(f'     \033[38;5;246m└\033[0m \033[38;5;246m(no memory files yet)\033[0m')
+
+        # Skills section
+        lines.append('')
+        skill_count = len(self.skills) if hasattr(self, 'skills') else 0
+        active = self.skills.active_skill.name if hasattr(self, 'skills') and self.skills.active_skill else None
+        lines.append(f'     \033[1mSkills\033[0m\033[38;5;246m · /skills\033[0m')
+        lines.append(f'     \033[38;5;246m├\033[0m Loaded: {skill_count} skills')
+        if active:
+            lines.append(f'     \033[38;5;246m└\033[0m Active: {active}')
+        else:
+            lines.append(f'     \033[38;5;246m└\033[0m \033[38;5;246m(no skill active)\033[0m')
+
+        # Suggestions
+        lines.append('')
+        lines.append(f'      \033[1mSuggestions\033[0m')
+        msgs_count = len(messages)
+        if msgs_count > 40:
+            lines.append(f'     \033[38;5;153mℹ\033[0m\033[1m{msgs_count} messages in history\033[0m\033[38;5;246m → consider /clear if context is stale\033[0m')
+        if tracker.compression_count > 0:
+            lines.append(f'     \033[38;5;153mℹ\033[0m\033[1m{tracker.compression_count} context compression(s)\033[0m\033[38;5;246m performed this session\033[0m')
+        if pct_used > 75:
+            lines.append(f'     \033[38;5;153mℹ\033[0m\033[1mContext {pct_used:.0f}% used\033[0m\033[38;5;246m → approaching limit. Use /clear or simplify tasks.\033[0m')
+
+        output = '\n'.join(lines)
+        sys.stdout.write(output + '\n')
+        sys.stdout.flush()
 
     def _switch_workdir(self, new_workdir: str):
         """Switch all path-based tools to a new working directory."""
@@ -1720,7 +2126,7 @@ class TUDOU_CLI:
         import subprocess
         try:
             proc = subprocess.run(['git', 'rev-parse', '--show-toplevel'],
-                                  capture_output=True, text=True, timeout=10, cwd=str(start))
+                                  capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10, cwd=str(start))
             if proc.returncode == 0 and proc.stdout.strip():
                 return Path(proc.stdout.strip()).resolve()
         except Exception:
@@ -1767,7 +2173,7 @@ class TUDOU_CLI:
             '| `/thinking` | Toggle extended thinking: enable LLM reasoning for complex tasks |',
             '| `/sandbox [on, off, status]` | Toggle Windows Low-Integrity sandbox for Bash commands |',
             '| `/rootmodel` | Toggle root mode: auto-execute without asking permission |',
-            '| `/betterui` | Toggle better UI: reduce noise, hide non-essential output |',
+            '| `/quiet` | Toggle quiet mode: hide read-only tool output (Read, Glob, Grep, WebSearch, WebFetch) |',
             '| `/worktree [create, enter, exit, list]` | Manage git worktrees for isolated, reversible operations |',
             '| `/subagent` | Toggle sub-agent delegation: allow Agent to spawn sub-agents for parallel tasks |',
             '| `/remote start [nocode]` | Start remote control (Feishu Bot). Add `nocode` to skip pairing code |',

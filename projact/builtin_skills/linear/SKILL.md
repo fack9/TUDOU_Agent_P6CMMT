@@ -1,384 +1,87 @@
 ---
 name: linear
-description: "Linear: manage issues, projects, teams via GraphQL + curl."
-version: 1.0.0
-author: Hermes Agent
-license: MIT
-prerequisites:
-  env_vars: [LINEAR_API_KEY]
-  commands: [curl]
+description: Manage issues, projects & team workflows in Linear. Use when the user wants to read, create or updates tickets in Linear.
 metadata:
-  hermes:
-    tags: [Linear, Project Management, Issues, GraphQL, API, Productivity]
-origin: original
-source_repo: kevinnft/ai-agent-skills
-source_url: https://github.com/kevinnft/ai-agent-skills
-source_license: MIT
-language: en
+  short-description: Manage Linear issues in Codex
 ---
 
-# Linear — Issue & Project Management
+# Linear
 
-Manage Linear issues, projects, and teams directly via the GraphQL API using `curl`. No MCP server, no OAuth flow, no extra dependencies.
+## Overview
 
-## Setup
+This skill provides a structured workflow for managing issues, projects & team workflows in Linear. It ensures consistent integration with the Linear MCP server, which offers natural-language project management for issues, projects, documentation, and team collaboration.
 
-1. Get a personal API key from **Linear Settings > Account > Security & access > Personal API keys** (URL: https://linear.app/settings/account/security). Note: the org-level *Settings > API* page only shows OAuth apps and workspace-member keys, not personal keys.
-2. Set `LINEAR_API_KEY` in your environment (via `hermes setup` or your env config)
+## Prerequisites
+- Linear MCP server must be connected and accessible via OAuth
+- Confirm access to the relevant Linear workspace, teams, and projects
 
-## API Basics
+## Required Workflow
 
-- **Endpoint:** `https://api.linear.app/graphql` (POST)
-- **Auth header:** `Authorization: $LINEAR_API_KEY` (no "Bearer" prefix for API keys)
-- **All requests are POST** with `Content-Type: application/json`
-- **Both UUIDs and short identifiers** (e.g., `ENG-123`) work for `issue(id:)`
+**Follow these steps in order. Do not skip steps.**
 
-Base curl pattern:
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ viewer { id name } }"}' | python3 -m json.tool
+### Step 0: Set up Linear MCP (if not already configured)
+
+If any MCP call fails because Linear MCP is not connected, pause and set it up:
+
+1. Add the Linear MCP:
+   - `codex mcp add linear --url https://mcp.linear.app/mcp`
+2. Enable remote MCP client:
+   - Set `[features] rmcp_client = true` in `config.toml` **or** run `codex --enable rmcp_client`
+3. Log in with OAuth:
+   - `codex mcp login linear`
+
+After successful login, the user will have to restart codex. You should finish your answer and tell them so when they try again they can continue with Step 1.
+
+**Windows/WSL note:** If you see connection errors on Windows, try configuring the Linear MCP to run via WSL:
+```json
+{"mcpServers": {"linear": {"command": "wsl", "args": ["npx", "-y", "mcp-remote", "https://mcp.linear.app/sse", "--transport", "sse-only"]}}}
 ```
 
-## Python helper script (ergonomic alternative)
+### Step 1
+Clarify the user's goal and scope (e.g., issue triage, sprint planning, documentation audit, workload balance). Confirm team/project, priority, labels, cycle, and due dates as needed.
 
-For faster one-liners that don't need hand-written GraphQL, this skill ships a stdlib Python CLI at `scripts/linear_api.py`. Zero dependencies. Same auth (reads `LINEAR_API_KEY`).
+### Step 2
+Select the appropriate workflow (see Practical Workflows below) and identify the Linear MCP tools you will need. Confirm required identifiers (issue ID, project ID, team key) before calling tools.
 
-```bash
-SCRIPT=$(dirname "$(find ~/.hermes -path '*skills/productivity/linear/scripts/linear_api.py' 2>/dev/null | head -1)")/linear_api.py
+### Step 3
+Execute Linear MCP tool calls in logical batches:
+- Read first (list/get/search) to build context.
+- Create or update next (issues, projects, labels, comments) with all required fields.
+- For bulk operations, explain the grouping logic before applying changes.
 
-python3 "$SCRIPT" whoami
-python3 "$SCRIPT" list-teams
-python3 "$SCRIPT" get-issue ENG-42
-python3 "$SCRIPT" get-document 38359beef67c      # fetch a doc by slugId from the URL
-python3 "$SCRIPT" raw 'query { viewer { name } }'
-```
+### Step 4
+Summarize results, call out remaining gaps or blockers, and propose next actions (additional issues, label changes, assignments, or follow-up comments).
 
-All subcommands: `whoami`, `list-teams`, `list-projects`, `list-states`, `list-issues`, `get-issue`, `search-issues`, `create-issue`, `update-issue`, `update-status`, `add-comment`, `list-documents`, `get-document`, `search-documents`, `raw`. Run with `--help` for flags.
+## Available Tools
 
-Use the script when: you want a quick answer without crafting GraphQL. Use curl when: you need a query the script doesn't wrap, or you want to compose filters inline.
+Issue Management: `list_issues`, `get_issue`, `create_issue`, `update_issue`, `list_my_issues`, `list_issue_statuses`, `list_issue_labels`, `create_issue_label`
 
-## Workflow States
+Project & Team: `list_projects`, `get_project`, `create_project`, `update_project`, `list_teams`, `get_team`, `list_users`
 
-Linear uses `WorkflowState` objects with a `type` field. **6 state types:**
+Documentation & Collaboration: `list_documents`, `get_document`, `search_documentation`, `list_comments`, `create_comment`, `list_cycles`
 
-| Type | Description |
-|------|-------------|
-| `triage` | Incoming issues needing review |
-| `backlog` | Acknowledged but not yet planned |
-| `unstarted` | Planned/ready but not started |
-| `started` | Actively being worked on |
-| `completed` | Done |
-| `canceled` | Won't do |
+## Practical Workflows
 
-Each team has its own named states (e.g., "In Progress" is type `started`). To change an issue's status, you need the `stateId` (UUID) of the target state — query workflow states first.
+- Sprint Planning: Review open issues for a target team, pick top items by priority, and create a new cycle (e.g., "Q1 Performance Sprint") with assignments.
+- Bug Triage: List critical/high-priority bugs, rank by user impact, and move the top items to "In Progress."
+- Documentation Audit: Search documentation (e.g., API auth), then open labeled "documentation" issues for gaps or outdated sections with detailed fixes.
+- Team Workload Balance: Group active issues by assignee, flag anyone with high load, and suggest or apply redistributions.
+- Release Planning: Create a project (e.g., "v2.0 Release") with milestones (feature freeze, beta, docs, launch) and generate issues with estimates.
+- Cross-Project Dependencies: Find all "blocked" issues, identify blockers, and create linked issues if missing.
+- Automated Status Updates: Find your issues with stale updates and add status comments based on current state/blockers.
+- Smart Labeling: Analyze unlabeled issues, suggest/apply labels, and create missing label categories.
+- Sprint Retrospectives: Generate a report for the last completed cycle, note completed vs. pushed work, and open discussion issues for patterns.
 
-**Priority values:** 0 = None, 1 = Urgent, 2 = High, 3 = Medium, 4 = Low
+## Tips for Maximum Productivity
 
-## Common Queries
+- Batch operations for related changes; consider smart templates for recurring issue structures.
+- Use natural queries when possible ("Show me what John is working on this week").
+- Leverage context: reference prior issues in new requests.
+- Break large updates into smaller batches to avoid rate limits; cache or reuse filters when listing frequently.
 
-### Get current user
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ viewer { id name email } }"}' | python3 -m json.tool
-```
+## Troubleshooting
 
-### List teams
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ teams { nodes { id name key } } }"}' | python3 -m json.tool
-```
-
-### List workflow states for a team
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ workflowStates(filter: { team: { key: { eq: \"ENG\" } } }) { nodes { id name type } } }"}' | python3 -m json.tool
-```
-
-### List issues (first 20)
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ issues(first: 20) { nodes { identifier title priority state { name type } assignee { name } team { key } url } pageInfo { hasNextPage endCursor } } }"}' | python3 -m json.tool
-```
-
-### List my assigned issues
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ viewer { assignedIssues(first: 25) { nodes { identifier title state { name type } priority url } } } }"}' | python3 -m json.tool
-```
-
-### Get a single issue (by identifier like ENG-123)
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ issue(id: \"ENG-123\") { id identifier title description priority state { id name type } assignee { id name } team { key } project { name } labels { nodes { name } } comments { nodes { body user { name } createdAt } } url } }"}' | python3 -m json.tool
-```
-
-### Search issues by text
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ issueSearch(query: \"bug login\", first: 10) { nodes { identifier title state { name } assignee { name } url } } }"}' | python3 -m json.tool
-```
-
-### Filter issues by state type
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ issues(filter: { state: { type: { in: [\"started\"] } } }, first: 20) { nodes { identifier title state { name } assignee { name } } } }"}' | python3 -m json.tool
-```
-
-### Filter by team and assignee
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ issues(filter: { team: { key: { eq: \"ENG\" } }, assignee: { email: { eq: \"user@example.com\" } } }, first: 20) { nodes { identifier title state { name } priority } } }"}' | python3 -m json.tool
-```
-
-### List projects
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ projects(first: 20) { nodes { id name description progress lead { name } teams { nodes { key } } url } } }"}' | python3 -m json.tool
-```
-
-### List team members
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ users { nodes { id name email active } } }"}' | python3 -m json.tool
-```
-
-### List labels
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ issueLabels { nodes { id name color } } }"}' | python3 -m json.tool
-```
-
-## Common Mutations
-
-### Create an issue
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "mutation($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier title url } } }",
-    "variables": {
-      "input": {
-        "teamId": "TEAM_UUID",
-        "title": "Fix login bug",
-        "description": "Users cannot login with SSO",
-        "priority": 2
-      }
-    }
-  }' | python3 -m json.tool
-```
-
-### Update issue status
-First get the target state UUID from the workflow states query above, then:
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "mutation { issueUpdate(id: \"ENG-123\", input: { stateId: \"STATE_UUID\" }) { success issue { identifier state { name type } } } }"}' | python3 -m json.tool
-```
-
-### Assign an issue
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "mutation { issueUpdate(id: \"ENG-123\", input: { assigneeId: \"USER_UUID\" }) { success issue { identifier assignee { name } } } }"}' | python3 -m json.tool
-```
-
-### Set priority
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "mutation { issueUpdate(id: \"ENG-123\", input: { priority: 1 }) { success issue { identifier priority } } }"}' | python3 -m json.tool
-```
-
-### Add a comment
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "mutation { commentCreate(input: { issueId: \"ISSUE_UUID\", body: \"Investigated. Root cause is X.\" }) { success comment { id body } } }"}' | python3 -m json.tool
-```
-
-### Set due date
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "mutation { issueUpdate(id: \"ENG-123\", input: { dueDate: \"2026-04-01\" }) { success issue { identifier dueDate } } }"}' | python3 -m json.tool
-```
-
-### Add labels to an issue
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "mutation { issueUpdate(id: \"ENG-123\", input: { labelIds: [\"LABEL_UUID_1\", \"LABEL_UUID_2\"] }) { success issue { identifier labels { nodes { name } } } } }"}' | python3 -m json.tool
-```
-
-### Add issue to a project
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "mutation { issueUpdate(id: \"ENG-123\", input: { projectId: \"PROJECT_UUID\" }) { success issue { identifier project { name } } } }"}' | python3 -m json.tool
-```
-
-### Create a project
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "mutation($input: ProjectCreateInput!) { projectCreate(input: $input) { success project { id name url } } }",
-    "variables": {
-      "input": {
-        "name": "Q2 Auth Overhaul",
-        "description": "Replace legacy auth with OAuth2 and PKCE",
-        "teamIds": ["TEAM_UUID"]
-      }
-    }
-  }' | python3 -m json.tool
-```
-
-## Documents
-
-Linear **Documents** are prose docs (RFCs, specs, notes) stored alongside issues. They have their own `documents` root query and `document(id:)` single-fetch.
-
-### Document URLs and `slugId`
-
-Document URLs look like:
-```
-https://linear.app/<workspace>/document/<slug>-<hexSlugId>
-```
-
-The trailing hex segment is the `slugId`. Example: `https://linear.app/nousresearch/document/rfc-hermes-permission-gateway-discord-38359beef67c` → `slugId` is `38359beef67c`.
-
-**Important schema detail:** the Markdown body is in the `content` field. The ProseMirror JSON is in `contentState` (not `contentData` — that field does not exist and the API returns 400).
-
-### Fetch a document by slugId
-
-`document(id:)` only accepts UUIDs. To fetch by the URL's hex slug, filter the collection:
-
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "query($s: String!) { documents(filter: { slugId: { eq: $s } }, first: 1) { nodes { id title content contentState slugId url creator { name } project { name } updatedAt } } }", "variables": {"s": "38359beef67c"}}' \
-  | python3 -m json.tool
-```
-
-Or via the Python helper:
-```bash
-python3 scripts/linear_api.py get-document 38359beef67c
-```
-
-### Fetch a document by UUID
-
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ document(id: \"11700cff-b514-4db3-afcc-3ed1afacba1c\") { title content url } }"}' \
-  | python3 -m json.tool
-```
-
-### List recent documents
-
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ documents(first: 25, orderBy: updatedAt) { nodes { id title slugId url updatedAt project { name } } } }"}' \
-  | python3 -m json.tool
-```
-
-### Search documents by title
-
-Linear's schema has no `searchDocuments` root. Use a title-substring filter instead:
-
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ documents(filter: { title: { containsIgnoreCase: \"RFC\" } }, first: 25) { nodes { title slugId url } } }"}' \
-  | python3 -m json.tool
-```
-
-## Pagination
-
-Linear uses Relay-style cursor pagination:
-
-```bash
-# First page
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ issues(first: 20) { nodes { identifier title } pageInfo { hasNextPage endCursor } } }"}' | python3 -m json.tool
-
-# Next page — use endCursor from previous response
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "{ issues(first: 20, after: \"CURSOR_FROM_PREVIOUS\") { nodes { identifier title } pageInfo { hasNextPage endCursor } } }"}' | python3 -m json.tool
-```
-
-Default page size: 50. Max: 250. Always use `first: N` to limit results.
-
-## Filtering Reference
-
-Comparators: `eq`, `neq`, `in`, `nin`, `lt`, `lte`, `gt`, `gte`, `contains`, `startsWith`, `containsIgnoreCase`
-
-Combine filters with `or: [...]` for OR logic (default is AND within a filter object).
-
-## Typical Workflow
-
-1. **Query teams** to get team IDs and keys
-2. **Query workflow states** for target team to get state UUIDs
-3. **List or search issues** to find what needs work
-4. **Create issues** with team ID, title, description, priority
-5. **Update status** by setting `stateId` to the target workflow state
-6. **Add comments** to track progress
-7. **Mark complete** by setting `stateId` to the team's "completed" type state
-
-## Rate Limits
-
-- 5,000 requests/hour per API key
-- 3,000,000 complexity points/hour
-- Use `first: N` to limit results and reduce complexity cost
-- Monitor `X-RateLimit-Requests-Remaining` response header
-
-## Important Notes
-
-- Always use `terminal` tool with `curl` for API calls — do NOT use `web_extract` or `browser`
-- Always check the `errors` array in GraphQL responses — HTTP 200 can still contain errors
-- If `stateId` is omitted when creating issues, Linear defaults to the first backlog state
-- The `description` field supports Markdown
-- Use `python3 -m json.tool` or `jq` to format JSON responses for readability
+- Authentication: Clear browser cookies, re-run OAuth, verify workspace permissions, ensure API access is enabled.
+- Tool Calling Errors: Confirm the model supports multiple tool calls, provide all required fields, and split complex requests.
+- Missing Data: Refresh token, verify workspace access, check for archived projects, and confirm correct team selection.
+- Performance: Remember Linear API rate limits; batch bulk operations, use specific filters, or cache frequent queries.

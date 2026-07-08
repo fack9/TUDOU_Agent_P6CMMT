@@ -51,7 +51,7 @@ worktree:
 # 使用飞书Bot作为消息中转，无需内网穿透
 # 创建飞书应用: https://open.feishu.cn → 添加机器人能力 → 事件订阅选"长连接"
 # remote指令用法:/remote start 开启远程控制服务(start后面可以再加nocode参数，这样就不用你再看一眼配对码了)
-#这一条为防止有些老傻子不知道怎么配对的教程(加了nocode参数当我没说)，你先给它发一条信息,然后TUDOU_agent的后台会显示,里面有个code = XXXXX ,你把code显示的6位数密码在你聊天的设备上发，它验证好了就可以用了
+# 这一条为防止有些老傻子不知道怎么配对的教程(加了nocode参数当我没说)，你先给它发一条信息,然后TUDOU_agent的后台会显示,里面有个code = XXXXX ,你把code显示的6位数密码在你聊天的设备上发，它验证好了就可以用了
 # /remote stop 停止远程控制服务
 # /remote status 查看连接状态
 remote:
@@ -68,17 +68,18 @@ mcp:
   servers:
     - name: filesystem
       command: npx
-      args: ["-y", "@anthropic-ai/mcp-server-filesystem", "YOUR_USER_PATH"]
+      args: ["-y", "@anthropic-ai/mcp-server-filesystem", "YOUR_USER_PATH"] # 填MCP服务器和你的路径
 
     - name: github
       command: npx
-      args: ["-y", "@anthropic-ai/mcp-server-github"]
+      args: ["-y", "@anthropic-ai/mcp-server-github"] # 填MCP服务器和下方你的github的token密钥
       env:
         GITHUB_TOKEN: "YOUR_TOKEN"
+        # 后面你可以继续复制这个结构弄更多MCP
 
 # --- Bing Web Search API 回退 ---
 # 当 BS4 解析 Bing HTML 失败时自动启用 Bing Search API v7
-# 获取 API key: https://portal.azure.com → 创建 Bing Search 资源
+# 获取 API key: https://portal.azure.com就创建 Bing Search 资源
 tools:
   web_search:
     bing_api_key: ""

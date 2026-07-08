@@ -99,7 +99,7 @@ class HookManager:
         cmd = self._substitute(hook.command, context)
         try:
             result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True,
+                cmd, shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace',
                 timeout=hook.timeout,
             )
             return result.returncode == 0

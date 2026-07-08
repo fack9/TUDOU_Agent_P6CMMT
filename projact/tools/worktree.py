@@ -53,7 +53,7 @@ class WorktreeManager:
         """Run a git command. Returns (returncode, stdout, stderr)."""
         cmd = ['git'] + list(args)
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60,
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60,
                                   cwd=cwd or str(self._repo_root))
             return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
         except subprocess.TimeoutExpired:

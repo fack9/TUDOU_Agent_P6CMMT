@@ -41,7 +41,7 @@ class SoftwareCLITool(BaseTool):
 
         cmd = f'{self._exe} {command}' if not command.startswith(self._exe) else command
         try:
-            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout, env={**os.environ, 'PAGER': 'cat'})
+            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout, env={**os.environ, 'PAGER': 'cat'})
         except subprocess.TimeoutExpired:
             return ToolResult(success=False, output='', error=f'Command timed out after {timeout}s.')
         except Exception as e:

@@ -12,10 +12,6 @@ CONFIG_DESCRIPTIONS = {
     'model': 'LLM model identifier (e.g. deepseek-v4-pro, gpt-4o, claude-sonnet-4-6)',
     'permission_mode': 'Tool execution mode: default (ask), auto (no prompt), plan (plan-first)',
     'max_iterations': 'Maximum tool-call iterations per conversation turn',
-    'max_context_tokens': 'Context window token budget',
-    'compress_threshold': 'Trigger context compression at this fraction of the token budget (0.0-1.0)',
-    'tool_result_max_lines': 'Truncate tool results longer than this many lines',
-    'tool_result_max_bytes': 'Truncate tool results longer than this many bytes',
     'bash_timeout_seconds': 'Timeout for Bash tool commands',
     'web_fetch_timeout_seconds': 'Timeout for WebFetch tool requests',
     'providers.anthropic.api_key': 'Anthropic API key (sk-ant-xxx). Leave empty to use ANTHROPIC_API_KEY env var.',
@@ -33,9 +29,6 @@ CONFIG_DESCRIPTIONS = {
     'remote.feishu.app_id': 'Feishu Bot App ID',
     'remote.feishu.app_secret': 'Feishu Bot App Secret',
     'remote.feishu.base_url': 'Feishu Open API base URL',
-    'ui.syntax_highlight': 'Enable syntax highlighting for code blocks',
-    'ui.spinner_style': 'Spinner animation style (dots, line, wave, etc.)',
-    'ui.max_output_height': 'Max height for code/output blocks in terminal lines',
     'sandbox.enabled': 'Enable sandbox mode for Bash commands',
 }
 

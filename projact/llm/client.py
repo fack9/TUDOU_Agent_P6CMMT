@@ -4,6 +4,7 @@ from config.settings import Settings
 from .types import LLMResponse
 from .providers.anthropic import AnthropicProvider
 from .providers.openai_compat import OpenAICompatProvider
+from .token_counter import try_get_model_limit, get_model_token_limit
 
 class LLMClient:
 
@@ -64,6 +65,16 @@ class LLMClient:
     def count_tokens(self, messages: list[dict]) -> int:
         provider = self._get_provider(self._default_model)
         return provider.count_tokens(messages)
+
+    def get_model_limit(self, model: str | None = None) -> int:
+        """Get the context window size. Tries API detection for OpenAI-compat, falls back to known limits."""
+        model = model or self._default_model
+        if not self._is_anthropic_model(model):
+            cfg = self._settings.get('providers', {}).get('openai_compat', {})
+            return try_get_model_limit(model, provider='openai_compat',
+                                       base_url=cfg.get('base_url', ''),
+                                       api_key=cfg.get('api_key', ''))
+        return get_model_token_limit(model)
 
     def _get_provider(self, model: str):
         if self._is_anthropic_model(model):

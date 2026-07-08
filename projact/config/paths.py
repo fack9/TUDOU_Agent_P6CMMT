@@ -23,7 +23,8 @@ _PROJACT_DIR = get_projact_dir()
 
 def get_config_paths() -> dict:
     home = Path.home()
-    return {'user_config_dir': home / '.tudou_agent', 'user_config_file': home / '.tudou_agent' / 'config.yaml', 'user_permissions_file': home / '.tudou_agent' / 'permissions.json', 'user_history_file': home / '.tudou_agent' / 'history', 'user_sessions_db': home / '.tudou_agent' / 'sessions.db', 'hermes_skills_dir': home / '.hermes' / 'skills', 'projact_config_file': _PROJACT_DIR / 'config.yaml', 'project_config_file': '.tudou_agent.yaml'}
+    # 'hermes_skills_dir' deprecated — Hermes skill compatibility pathway not implemented
+    return {'user_config_dir': home / '.tudou_agent', 'user_config_file': home / '.tudou_agent' / 'config.yaml', 'user_permissions_file': home / '.tudou_agent' / 'permissions.json', 'user_history_file': home / '.tudou_agent' / 'history', 'user_sessions_db': home / '.tudou_agent' / 'sessions.db', 'projact_config_file': _PROJACT_DIR / 'config.yaml', 'project_config_file': '.tudou_agent.yaml'}
 
 def find_project_root(start: Path | None=None) -> Path:
     if start is None:

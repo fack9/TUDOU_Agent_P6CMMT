@@ -25,9 +25,13 @@ class MCPManager:
                 cwd = cfg.get('cwd')
                 if cwd:
                     cwd = str(Path(cwd).expanduser())
+                command = cfg.get('command', '')
+                if not command:
+                    print('[MCP] Skipping "{}": missing "command" in config'.format(name), file=sys.stderr)
+                    continue
                 client = MCPClient(
                     name=name,
-                    command=cfg['command'],
+                    command=command,
                     args=cfg.get('args', []),
                     env=cfg.get('env', {}),
                     cwd=cwd,
@@ -43,10 +47,6 @@ class MCPManager:
                     for tool_def in tools:
                         wrapped = MCPTool(client, name, tool_def)
                         tool_registry.register_tool(wrapped)
-
-                resources = client.list_resources()
-                for _res in resources:
-                    pass
 
                 self._clients[name] = client
                 connected += 1
@@ -67,6 +67,13 @@ class MCPManager:
         self._clients.clear()
         self._discovered = False
 
+    def is_connected(self, name: str) -> bool:
+        return name in self._clients
+
+    @property
+    def connected_count(self) -> int:
+        return len(self._clients)
+
     @property
     def server_count(self) -> int:
-        return len(self._clients)
+        return len(self._configs)

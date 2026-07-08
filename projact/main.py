@@ -30,6 +30,7 @@ def parse_args():
     parser.add_argument('--permission-mode', choices=['plan', 'default', 'auto'], help='Permission mode')
     parser.add_argument('--version', '-v', action='store_true', help='Show version and exit')
     parser.add_argument('--prompt', '-p', help='Single prompt mode (non-interactive)')
+    parser.add_argument('--headless', action='store_true', help='Headless mode: no TUI, plain output (for MCP/CI)')
     return parser.parse_args()
 
 def main():
@@ -42,11 +43,15 @@ def main():
         cli_overrides['model'] = args.model
     if args.permission_mode:
         cli_overrides['permission_mode'] = args.permission_mode
+    # Headless flag: skip TUI (prompt_toolkit) when running in MCP/CI/no-console env
+    if args.headless:
+        cli_overrides['headless'] = True
     from cli import TUDOU_CLI
     cli = TUDOU_CLI(cli_overrides if cli_overrides else None)
     if args.prompt:
         cli._process_input(args.prompt)
     else:
         cli.run()
+
 if __name__ == '__main__':
     main()

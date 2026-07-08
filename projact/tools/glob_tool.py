@@ -12,19 +12,25 @@ class GlobTool(BaseTool):
         self._workdir = Path(workdir).resolve()
         self._max_results = max_results
 
-    def execute(self, pattern: str, path: str | None=None) -> ToolResult:
+    def execute(self, pattern: str, path: str | None=None, on_output=None) -> ToolResult:
+        if not pattern or not pattern.strip():
+            return ToolResult(success=False, output='', error='Pattern is required and cannot be empty. Example: "**/*.py" or "src/**/*.ts".')
         base = Path(path).resolve() if path else self._workdir
         if not base.exists():
             return ToolResult(success=False, output='', error=f'Directory not found: {base}')
         results = []
+        _streamed = 0
         for match in base.glob(pattern):
             if len(results) >= self._max_results:
                 break
-            results.append(str(match.relative_to(base)))
+            line = str(match.relative_to(base))
+            results.append(line)
+            if on_output and len(results) % 20 == 0 and _streamed < 2:
+                on_output(f'{len(results)} files found...')
+                _streamed += 1
         if not results:
             return ToolResult(success=True, output='No files matched.', metadata={'count': 0, 'pattern': pattern})
         output = '\n'.join(results)
-        truncated = ''
         if len(results) >= self._max_results:
-            truncated = f'\n... [truncated at {self._max_results} results]'
-        return ToolResult(success=True, output=output + truncated, metadata={'count': len(results), 'pattern': pattern})
+            output += f'\n... [max {self._max_results} reached]'
+        return ToolResult(success=True, output=output, metadata={'count': len(results), 'pattern': pattern})
